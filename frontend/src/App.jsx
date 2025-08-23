@@ -5,10 +5,7 @@ export default function App() {
   const api = (import.meta.env.VITE_API_URL || "http://localhost:8000") + "/ping";
 
   useEffect(() => {
-    fetch(api)
-      .then(r => r.json())
-      .then(setResp)
-      .catch(() => setResp({ status: "error" }));
+    fetch(api).then(r => r.json()).then(setResp).catch(() => setResp({ status: "error" }));
   }, [api]);
 
   return (
