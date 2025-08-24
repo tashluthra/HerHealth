@@ -1,39 +1,39 @@
-import logging
-from time import time
+import os
+import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from .settings import get_settings
-
-
-logger = logging.getLogger("uvicorn.access")
+from app.routers.users import router as users_router
 
 app = FastAPI(title="HerHealth API")
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start = time()
-    response = await call_next(request)
-    duration_ms = int((time() - start) * 1000)
-    logger.info(f"{request.method} {request.url.path} -> {response.status_code} ({duration_ms}ms)")
-    return response
-
+# CORS (relax for local dev; tighten later)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Simple request logging so we see traffic + timings
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - start) * 1000
+    print(f"{request.method} {request.url.path} -> {response.status_code} in {duration_ms:.1f}ms")
+    return response
+
 @app.get("/ping")
 def ping():
-    s = get_settings()
-    return {"status": "ok", "env": s.ENV}
+    return {"pong": True}
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True}
+    return {"status": "ok"}
 
 @app.get("/version")
 def version():
-    return {"version": "0.1.0"}
+    return {"version": os.getenv("API_VERSION", "dev")}
+
+# Register /users endpoints
+app.include_router(users_router)
