@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from "react";
+import UsersDemo from "./UsersDemo";
+
 
 const API = import.meta.env.VITE_API_URL || "https://herhealth-api.onrender.com";
 
@@ -71,6 +73,7 @@ export default function App() {
         <Box title="/ping" data={results.ping.data} error={results.ping.error} />
         <Box title="/healthz" data={results.healthz.data} error={results.healthz.error} />
         <Box title="/version" data={results.version.data} error={results.version.error} />
+        <UsersDemo />
       </main>
     </div>
   );
