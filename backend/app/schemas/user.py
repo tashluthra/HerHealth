@@ -1,32 +1,30 @@
 from typing import Annotated
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from enum import Enum
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field, field_validator
 
 class UserRole(str, Enum):
     user = "user"
     clinician = "clinician"
     admin = "admin"
 
-# Reusable constrained strings
 NameStr = Annotated[str, Field(strip_whitespace=True, min_length=1, max_length=120)]
 
 class UserBase(BaseModel):
     email: EmailStr = Field(max_length=255)
     name: NameStr
 
-# Legacy create for /users (no password)
 class UserCreate(UserBase):
-    pass
+    pass  # legacy endpoint if you still have /users
 
 class UserRegister(UserBase):
-    # No regex: use validator below
+    # no regex here—Pydantic v2 core regex doesn't support look-arounds
     password: Annotated[str, Field(min_length=12, max_length=128)]
 
     @field_validator("password")
     @classmethod
     def password_policy(cls, v: str) -> str:
-        # Require lower, upper, digit, special
+        # OWASP-ish: require lower, upper, digit, special
         if not any(c.islower() for c in v):
             raise ValueError("password must include a lowercase letter")
         if not any(c.isupper() for c in v):
