@@ -14,7 +14,6 @@ from sqlalchemy.dialects import postgresql
 user_role = postgresql.ENUM('user', 'clinician', 'admin', name='user_role')
 
 
-
 # revision identifiers, used by Alembic.
 revision: str = '35c76eef40df'
 down_revision: Union[str, None] = '91fe72a41638'

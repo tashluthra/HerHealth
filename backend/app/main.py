@@ -2,7 +2,12 @@ import os
 import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from app.routers.auth import router as auth_router
 from app.routers.users import router as users_router
+
+from app.routers.sessions import router as sessions_router
+from app.routers.sets import router as sets_router
+from app.routers.reps import router as reps_router
 
 app = FastAPI(title="HerHealth API")
 
@@ -37,3 +42,8 @@ def version():
 
 # Register /users endpoints
 app.include_router(users_router)
+app.include_router(auth_router)
+
+app.include_router(sessions_router)
+app.include_router(sets_router)
+app.include_router(reps_router)
