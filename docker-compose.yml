@@ -18,12 +18,9 @@ services:
 
   api:
     build:
-      context: ./backend           # build from backend/
-      dockerfile: Dockerfile
+      context: .            # <-- repo root as build context
+      dockerfile: Dockerfile  # <-- root Dockerfile
     container_name: herhealth_api
-    working_dir: /app
-    env_file:
-      - backend/.env               # for DATABASE_URL, etc.
     environment:
       ENV: ${ENV:-local}
       DB_HOST: db
@@ -37,8 +34,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app             # mount entire backend
-    command: ["uvicorn","app.main:app","--host","0.0.0.0","--port","8000","--reload"]
+      - ./backend/app:/app/app:delegated
 
 volumes:
   db_data:
