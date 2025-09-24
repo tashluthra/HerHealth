@@ -2,32 +2,36 @@ import React, { useEffect, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-vision";
 
 export default function SquatCam() {
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
+  //refs to DOM elements and other mutable objects
+  const videoRef = useRef(null); //<video> element that shows the webcam stream
+  const canvasRef = useRef(null); //<canvas> overlay for drawing lines
   const rafRef = useRef(null);
   const landmarkerRef = useRef(null);
 
+  //state variables for rendering
   const [ready, setReady] = useState(false); //is the webcam ready
   const [modelReady, setModelReady] = useState(false); //is the pose model ready 
-  const [modelRoot, setModelRoot] = useState(""); // shows which root worked
-  const [error, setError] = useState(null);
-  const [coords, setCoords] = useState({
-  hip: "–", knee: "–", ankle: "–", shoulder: "–"
+  const [modelRoot, setModelRoot] = useState(""); //which mediapipe root was used
+  const [error, setError] = useState(null); //error messages
+  //state to hold the last detected coords (for hip, knee, ankle, shoulder)
+  const [coords, setCoords] = useState({ 
+  hip: "–", knee: "–", ankle: "–", shoulder: "–" 
   });
 
-  useEffect(() => {
+  useEffect(() => { 
     let mounted = true;
 
+    //initalise mediapipe pose landmarker from 2 roots (more robust)
     async function initLandmarker() {
-      // Try both layouts: .../mediapipe/wasm/* or .../mediapipe/* (no subfolder)
+      
       const roots = ["/mediapipe/wasm", "/mediapipe"];
       let lastErr = null;
 
       for (const root of roots) {
         try {
           console.info("[HerHealth] Trying fileset root:", root);
-          const resolver = await FilesetResolver.forVisionTasks(root);
-          const landmarker = await PoseLandmarker.createFromOptions(resolver, {
+          const resolver = await FilesetResolver.forVisionTasks(root); //loads model files from root
+          const landmarker = await PoseLandmarker.createFromOptions(resolver, { //create the landmarker
             baseOptions: { modelAssetPath: "/mediapipe/pose_landmarker_lite.task" },
             runningMode: "VIDEO",
             numPoses: 1,
@@ -46,7 +50,7 @@ export default function SquatCam() {
 
     async function init() {
       try {
-        // 1) Camera
+        //camera setup (ask permission to user camera)
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user" },
           audio: false,
@@ -56,51 +60,66 @@ export default function SquatCam() {
         await videoRef.current.play();
         setReady(true);
 
-        // 2) MediaPipe model (robust path handling)
-        const { landmarker, root } = await initLandmarker();
+        //mediapipe pose landmarker setup
+        const { landmarker, root } = await initLandmarker(); //calls function to load the pose model
         if (!mounted) return;
-        landmarkerRef.current = landmarker;
-        setModelRoot(root);
-        setModelReady(true);
-        console.info("[HerHealth] Model ready from root:", root);
+        landmarkerRef.current = landmarker; //store the landmarker in a state to use later 
+        setModelRoot(root); 
+        setModelReady(true); 
+        console.info("[HerHealth] Model ready from root:", root); //log which root was used
 
-        // 3) Render loop
+        //render loop (runs on every animation frame)
         const tick = () => {
           if (!mounted) return;
+          // grab the current video and canvas DOM nodes
           const video = videoRef.current;
           const canvas = canvasRef.current;
-          if (!video || !canvas) {
+          if (!video || !canvas) { 
             rafRef.current = requestAnimationFrame(tick);
             return;
           }
-          const ctx = canvas.getContext("2d");
-          if (ctx && video.readyState >= 2) {
-            if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
-            if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
 
+          const ctx = canvas.getContext("2d"); //gives the 2d canvas context to draw on (drawing API)
+          if (ctx && video.readyState >= 2) { //checks  the video is ready also
+            // match canvas size to video size
+            if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth; 
+            if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+            
+            //clear previous frame
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // border (helps see the overlay is aligned)
+            //border (helps see the overlay is aligns with the video)
             ctx.strokeStyle = "rgba(255,255,255,0.5)";
             ctx.lineWidth = 2;
             ctx.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
 
-            // draw pose landmarks
+            //if pose landmarker ready, try to detect landmarks for this video frame
             if (landmarkerRef.current) {
               try {
-                const results = landmarkerRef.current.detectForVideo(video, performance.now());
-                if (results?.poseLandmarks?.length) {
-                  const lm = results.poseLandmarks[0];
+                const now = performance.now();
+                const res = landmarkerRef.current.detectForVideo(video, now);
 
-                  // update coords here
+                // ✅ tasks-vision uses `landmarks`
+                const lm = res?.landmarks?.[0];
+
+                if (!lm || !lm.length) {
+                  // Show a small hint when nothing is detected
+                  ctx.font = "14px system-ui, sans-serif";
+                  ctx.fillStyle = "rgba(255,0,0,0.8)";
+                  ctx.fillText("No pose detected", 12, 20);
+
+                  // Keep the panel blank
+                  setCoords({ hip: "–", knee: "–", ankle: "–", shoulder: "–" });
+                } else {
+                  // Update the coords panel (left side indices)
                   setCoords({
-                    hip: `${lm[23].x.toFixed(3)}, ${lm[23].y.toFixed(3)}`,
-                    knee: `${lm[25].x.toFixed(3)}, ${lm[25].y.toFixed(3)}`,
-                    ankle: `${lm[27].x.toFixed(3)}, ${lm[27].y.toFixed(3)}`,
+                    hip:      `${lm[23].x.toFixed(3)}, ${lm[23].y.toFixed(3)}`,
+                    knee:     `${lm[25].x.toFixed(3)}, ${lm[25].y.toFixed(3)}`,
+                    ankle:    `${lm[27].x.toFixed(3)}, ${lm[27].y.toFixed(3)}`,
                     shoulder: `${lm[11].x.toFixed(3)}, ${lm[11].y.toFixed(3)}`
                   });
 
-                  // draw after
+                  // Draw the skeleton
                   const utils = new DrawingUtils(ctx);
                   utils.drawLandmarks(lm);
                   utils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS);
