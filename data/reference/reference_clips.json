@@ -1,0 +1,70 @@
+[
+    {
+        "url": "https://www.youtube.com/watch?v=THiQpitHxqw&list=PLAOyQQOZQKwsIYsX4EKUJpAl72ILPDuOO",
+        "id":"THiQpitHxqw",
+        "start": 11,
+        "end": 13,
+        "stance": "shoulder",
+        "depth": "full",
+        "speed": "normal",
+        "view": "side",
+        "notes": "Also shows bad form- check against"
+    },
+    {
+        "url": "https://www.youtube.com/watch?v=p5nE_Yahbto&list=PLAOyQQOZQKwsIYsX4EKUJpAl72ILPDuOO&index=2",
+        "id":"p5nE_Yahbto",
+        "start": 61,
+        "end": 66,
+        "stance": "shoulder",
+        "depth": "full",
+        "speed": "slow",
+        "view": "side",
+        "notes": "Pregnant woman doing- safe"
+    },
+    {
+        "url": "https://www.youtube.com/watch?v=l83R5PblSMA&list=PLAOyQQOZQKwsIYsX4EKUJpAl72ILPDuOO&index=3",
+        "id": "l83R5PblSMA",
+        "start": 0,
+        "end": 3,
+        "stance": "shoulder",
+        "depth": "full",
+        "speed": "normal",
+        "view": "side",
+        "notes": "Pure gym- professional"
+    },
+
+    {
+        "url": "https://www.youtube.com/watch?v=LyidZ42Iy9Q&list=PLAOyQQOZQKwsIYsX4EKUJpAl72ILPDuOO&index=4",
+        "id":"LyidZ42Iy9Q",
+        "start": 29,
+        "end": 32,
+        "stance": "shoulder",
+        "depth": "full",
+        "speed": "normal",
+        "view": "side",
+        "notes": ""
+    },
+    {
+        "url": "https://www.youtube.com/watch?v=m0GcZ24pK6k&list=PLAOyQQOZQKwsIYsX4EKUJpAl72ILPDuOO&index=5",
+        "id":"m0GcZ24pK6k",
+        "start": 10,
+        "end": 15,
+        "stance": "shoulder",
+        "depth": "full",
+        "speed": "slow",
+        "view": "side",
+        "notes": ""
+    },
+    {
+        "url": "https://www.youtube.com/watch?v=m0GcZ24pK6k&list=PLAOyQQOZQKwsIYsX4EKUJpAl72ILPDuOO&index=5",
+        "id":"m0GcZ24pK6k",
+        "start": 21,
+        "end": 25,
+        "stance": "shoulder",
+        "depth": "full",
+        "speed": "slow",
+        "view": "front",
+        "notes": "forward facing camera"
+    }
+
+]
