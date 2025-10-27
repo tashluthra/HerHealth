@@ -1,0 +1,19 @@
+.DS_Store
+data/reference_videos/
+*.mp4
+*.mov
+*.webm
+# Python envs
+.venv/
+data/reference_videos/mp_env/
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Build/cache
+dist/
+build/
+nginx
+Copy code
+
