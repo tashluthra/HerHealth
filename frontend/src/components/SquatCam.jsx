@@ -35,16 +35,32 @@ export default function SquatCam() {
   const lastFrameTs = useRef(performance.now());
   const bottomSince = useRef(null);
 
-  // thresholds (tune later on your clips)
-  const THRESH = { 
-    kneeBottom: 100, 
-    kneeTop: 160, hipFold: 120, 
-    minBottomMs: 80 };
+const THRESH = {
+  kneeTop: 168,        // was 168
+  kneeBottom: 115,     // was 115
+  torsoStay: 25,
+  minBottomMs: 80,
+  minFootLift: 0.06,
+  minHipDrop: 0.04
+};
+
+const GEO = {
+  minHipDrop: 0.02,    // was 0.04
+  maxFootLift: 0.2,   // was 0.05
+  minTorsoDelta: 3     // was 4 (your torso delta is often small)
+};
 
 
   // which anatomical side we’re using for angles (auto L/R with hysteresis)
 const [sideUsed, setSideUsed] = useState("L");
 const sideStickyRef = useRef({ side: "L", wins: 0 });
+
+
+
+// live per-frame signals + baseline captured at Top
+const curSig = useRef({ hipY: null, ankleY: null, heelY: null });
+const topBaseline = useRef(null);
+
 
 
 
@@ -64,10 +80,11 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
   const I = IDX[side];
   const pts = [lms[I.hip], lms[I.knee], lms[I.ankle]];
   if (pts.some(p => !p)) return false;
-  const visOK = pts.every(p => (p.visibility ?? 0) > 0.5);
-  const inFrameOK = pts.every(p => p.x>0 && p.x<1 && p.y>0 && p.y<0.98);
+  const visOK = pts.every(p => (p.visibility ?? 0) > 0.3); // was 0.5
+  const inFrameOK = pts.every(p => p.x>0 && p.x<1 && p.y>0 && p.y<0.99);
   return visOK && inFrameOK;
 }
+
 
 
 
@@ -103,6 +120,17 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
     };
   }
 
+  function collectSignals(lms, side) {
+  const I = IDX[side] || IDX.L;
+  const hipY   = lms[I.hip]?.y ?? null;
+  const ankleY = lms[I.ankle]?.y ?? null;
+  // Heel landmarks: L=29, R=30
+  const heelIdx = side === "R" ? 30 : 29;
+  const heelY = lms[heelIdx]?.y ?? null;
+  return { hipY, ankleY, heelY };
+}
+
+
   // --- FPS + reps ---
   function tickFps() {
     const now = performance.now();
@@ -111,30 +139,46 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
     const inst = 1000 / Math.max(dt, 1);
     setFps(f => Math.round(0.8 * f + 0.2 * inst)); // gentle smoothing
   }
+function updateRepState(ang, ts) {
+  let cur = phaseRef.current;
 
-  function updateRepState(ang, ts) {
-  let cur = phaseRef.current;                  // use the ref as the source of truth
-  const atTop = ang.knee >= THRESH.kneeTop;
-  const atBottom = ang.knee <= THRESH.kneeBottom;
+  const atTopKnee = ang.knee >= THRESH.kneeTop;
+  const atBotKnee = ang.knee <= THRESH.kneeBottom;
 
-  if (cur === "Top" && !atTop) cur = "Down";
-  else if (cur === "Down" && atBottom) { cur = "Bottom"; bottomSince.current = ts; }
-  else if (cur === "Bottom") {
+  // light anti-fake using the last Top baseline
+  const base = topBaseline.current;
+  const sig  = curSig.current || {};
+  const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;           // + = down
+  const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
+  const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
+  const footLift  = Math.max(ankleLift, heelLift || 0);
+
+  const bottomOK = atBotKnee && hipDrop >= GEO.minHipDrop && footLift <= GEO.maxFootLift;
+  const topOK    = atTopKnee; // we already refresh the baseline whenever atTopKneeNow
+
+  if (cur === "Top" && !atTopKnee) {
+    cur = "Down";
+  } else if (cur === "Down" && bottomOK) {
+    cur = "Bottom";
+    bottomSince.current = ts;
+  } else if (cur === "Bottom") {
     if (bottomSince.current && ts - bottomSince.current >= THRESH.minBottomMs) {
-      if (!atBottom) cur = "Up";
+      if (!atBotKnee) cur = "Up";
     }
-  } else if (cur === "Up" && atTop) {
+  } else if (cur === "Up" && topOK) {
     cur = "Top";
     setRepCount(c => c + 1);
     setSession(s => ({ ...s, reps: [...s.reps, { t: ts, knee: ang.knee, hip: ang.hip, torso: ang.torso }] }));
   }
 
   if (cur !== phaseRef.current) {
-    phaseRef.current = cur;    // keep the ref in sync for the draw loop
-    setPhase(cur);             // update React state for the HUD
-    if (DEBUG) console.log("[HerHealth] Phase:", phaseRef.current);
+    phaseRef.current = cur;
+    setPhase(cur);
+    if (DEBUG) console.log("[HerHealth] phase:", cur, { hipDrop: +hipDrop.toFixed(3), footLift: +footLift.toFixed(3) });
   }
 }
+
+
 
 
   // Call this for each MediaPipe result
@@ -152,6 +196,16 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
   const ang = smoothAngles(angRaw);   // {knee, hip, torso}
   setSideUsed(angRaw.side);           // "L" or "R"
 
+  const sig = collectSignals(lms, angRaw.side);
+  curSig.current = sig;
+  // --- PRIME TOP BASELINE IF NOT SET ---
+const atTopKneeNow = ang.knee >= THRESH.kneeTop;
+if (atTopKneeNow) {
+  topBaseline.current = { ...curSig.current, torso: ang.torso };
+}
+
+
+
   // update the coords panel to match the chosen side
   const I = IDX[angRaw.side];
   setCoords({
@@ -162,11 +216,11 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
   });
 
   const ok = lowerBodyEligible(lms, angRaw.side);
-  if (!ok) {
-    // don’t advance the state machine when legs aren’t visible
-    if (phaseRef.current !== "Down") { phaseRef.current = "Down"; setPhase("Down"); }
-    return;
-  }
+    if (!ok) {
+      // Just skip this frame; don’t change phase
+      return;
+    }
+
 
   // update the HUD numbers + counter
   updateRepState(ang, performance.now());
@@ -180,13 +234,16 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
 
 
   // session controls
-  function startSession() {
+function startSession() {
   setRepCount(0);
   setPhase("Top");
-  phaseRef.current = "Top";    // ← add this
+  phaseRef.current = "Top";
   bottomSince.current = null;
+  topBaseline.current = null;     // ← reset baseline
   setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
 }
+
+
 
   function endSessionAndSave() {
     setSession(s => {
@@ -359,6 +416,31 @@ function computeAnglesSideAware(lms) {
                   utils.drawLandmarks(lm);
                   utils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS);
                   handlePoseResults(res);
+
+                  // --- DEBUG OVERLAY (after handlePoseResults) ---
+                    const base = topBaseline.current;
+                    const sig  = curSig.current || {};
+
+                    const I = IDX[sideUsed] || IDX.L;
+                    const s2 = lm[I.shoulder], h2 = lm[I.hip], k2 = lm[I.knee], a2 = lm[I.ankle];
+                    const tx2 = h2.x - s2.x, ty2 = h2.y - s2.y;
+                    const torsoLive = Math.round((Math.acos(ty2 / (Math.hypot(tx2,ty2)||1)) * 180) / Math.PI);
+
+                    const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;  // + = down
+                    const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
+                    const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
+                    const footLift  = Math.max(ankleLift, heelLift || 0);
+                    const torsoD    = base ? (torsoLive - (base.torso ?? torsoLive)) : 0;
+
+                    ctx.fillStyle = "rgba(0,0,0,0.6)";
+                    ctx.fillRect(10, 200, 300, 72);
+                    ctx.fillStyle = "white";
+                    ctx.font = "12px system-ui, sans-serif";
+                    ctx.fillText(`hipDrop: ${hipDrop.toFixed(3)}  footLift: ${footLift.toFixed(3)}`, 18, 220);
+                    ctx.fillText(`torsoΔ: ${Math.round(torsoD)}°  Phase: ${phase}`, 18, 238);
+                    // --- END DEBUG OVERLAY ---
+
+                  
 
                                     // === ANGLE OVERLAY (left side indices 11,23,25,27) ===
                   const s = lm[11], h = lm[23], k = lm[25], a = lm[27];
