@@ -45,8 +45,8 @@ const THRESH = {
 };
 
 const GEO = {
-  minHipDrop: 0.02,    // was 0.04
-  maxFootLift: 0.2,   // was 0.05
+  minHipDrop: 0.04,    // was 0.04
+  maxFootLift: 0.6,   // was 0.05
   minTorsoDelta: 3     // was 4 (your torso delta is often small)
 };
 
@@ -60,6 +60,7 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
 // live per-frame signals + baseline captured at Top
 const curSig = useRef({ hipY: null, ankleY: null, heelY: null });
 const topBaseline = useRef(null);
+const footLiftEmaRef = useRef(0);  // exponential moving average for footLift
 
 
 
@@ -144,6 +145,7 @@ function updateRepState(ang, ts) {
 
   const atTopKnee = ang.knee >= THRESH.kneeTop;
   const atBotKnee = ang.knee <= THRESH.kneeBottom;
+  const leaveTop   = ang.knee < (THRESH.kneeTop - 5); // 5° hysteresis
 
   // light anti-fake using the last Top baseline
   const base = topBaseline.current;
@@ -151,12 +153,16 @@ function updateRepState(ang, ts) {
   const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;           // + = down
   const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
   const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
-  const footLift  = Math.max(ankleLift, heelLift || 0);
+
+  const rawFoot   = Math.max(ankleLift, heelLift || 0);
+  const alpha = 0.2; // smoothing factor
+  footLiftEmaRef.current = alpha * rawFoot + (1 - alpha) * (footLiftEmaRef.current ?? 0);
+  const footLift = footLiftEmaRef.current;
 
   const bottomOK = atBotKnee && hipDrop >= GEO.minHipDrop && footLift <= GEO.maxFootLift;
   const topOK    = atTopKnee; // we already refresh the baseline whenever atTopKneeNow
 
-  if (cur === "Top" && !atTopKnee) {
+  if (cur === "Top" && leaveTop) {
     cur = "Down";
   } else if (cur === "Down" && bottomOK) {
     cur = "Bottom";
@@ -198,11 +204,19 @@ function updateRepState(ang, ts) {
 
   const sig = collectSignals(lms, angRaw.side);
   curSig.current = sig;
-  // --- PRIME TOP BASELINE IF NOT SET ---
-const atTopKneeNow = ang.knee >= THRESH.kneeTop;
-if (atTopKneeNow) {
+
+// --- Ensure top baseline exists ---
+const atTopKneeNow = ang.knee >= (THRESH.kneeTop - 5); // small slack, still “tall”
+if (!topBaseline.current && atTopKneeNow) {
+  topBaseline.current = { ...curSig.current, torso: ang.torso };
+  if (DEBUG) console.log("[HerHealth] baseline initialised (knee:", ang.knee.toFixed(1), ")");
+}
+// keep baseline fresh whenever you’re clearly back at Top
+if (phaseRef.current === "Top" && atTopKneeNow) {
   topBaseline.current = { ...curSig.current, torso: ang.torso };
 }
+
+
 
 
 
