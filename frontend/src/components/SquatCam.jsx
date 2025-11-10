@@ -1,13 +1,28 @@
 import React, { useEffect, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-vision";
 
+
 export default function SquatCam() {
+
+  // === NEW: runtime-loaded reference targets ===
+  const [refAgg, setRefAgg] = useState(null);   // will hold data.aggregate
+  const [refErr, setRefErr] = useState(null); 
+
   //refs to DOM elements and other mutable objects
   const videoRef = useRef(null); //<video> element that shows the webcam stream
   const canvasRef = useRef(null); //<canvas> overlay for drawing lines
   const rafRef = useRef(null);
   const landmarkerRef = useRef(null);
   const phaseRef = useRef("Top");
+
+  // current view mode for UI + logic
+  const [viewMode, setViewMode] = useState("front");      // "front" | "side"
+  const viewModeRef = useRef("front"); 
+  useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
+  const modeStickyRef = useRef({ mode: "front", wins: 0 });
+  const modeWinsRef   = useRef(0);
+  const lastFrameInfoRef = useRef({ ang: null, mode: "front", side: "L" });
+
 
   //state variables for rendering
   const [ready, setReady] = useState(false); //is the webcam ready
@@ -35,9 +50,31 @@ export default function SquatCam() {
   const lastFrameTs = useRef(performance.now());
   const bottomSince = useRef(null);
 
-const THRESH = {
-  kneeTop: 168,        // was 168
-  kneeBottom: 115,     // was 115
+
+const refUrl = viewMode === "front"
+  ? "/reference/reference_clips_front.json"
+  : "/reference/reference_clips.json";
+const [refTargets, setRefTargets] = useState(null);
+
+useEffect(() => {
+  let mounted = true;
+  async function fetchRefTargets() {
+    try {
+      const res = await fetch(refUrl);
+      const data = await res.json();
+      if (mounted) setRefTargets(data);
+    } catch (e) {
+      // handle error if needed
+    }
+  }
+  fetchRefTargets();
+  return () => { mounted = false; };
+}, [refUrl]);
+
+
+const THRESH = {       // temporary hold values (will change with algorithm from video)
+  kneeTop: 168,        // can replace with professional values
+  kneeBottom: 115,     
   torsoStay: 25,
   minBottomMs: 80,
   minFootLift: 0.06,
@@ -105,6 +142,65 @@ const footLiftEmaRef = useRef(0);  // exponential moving average for footLift
     const torso = Math.round((Math.acos((ty) / (Math.hypot(tx, ty) || 1)) * 180) / Math.PI);
     return { knee, hip, torso };
   }
+
+  function torsoUprightFromLR(lms) {
+  const shL = lms[11], shR = lms[12], hipL = lms[23], hipR = lms[24];
+  if (!shL || !shR || !hipL || !hipR) return null;
+  const shoulder = { x: (shL.x + shR.x) / 2, y: (shL.y + shR.y) / 2 };
+  const hip      = { x: (hipL.x + hipR.x) / 2, y: (hipL.y + hipR.y) / 2 };
+  const tx = hip.x - shoulder.x, ty = hip.y - shoulder.y;
+  return Math.round((Math.acos(ty / (Math.hypot(tx, ty) || 1)) * 180) / Math.PI);
+}
+
+function visibilityScore(lms, idxs) {
+  const vals = idxs.map(i => (lms[i]?.visibility ?? 0));
+  return vals.reduce((a,b)=>a+b,0) / Math.max(vals.length,1);
+}
+
+function computeAnglesFrontView(lms) {
+  // Left
+  const sL=lms[11], hL=lms[23], kL=lms[25], aL=lms[27];
+  // Right
+  const sR=lms[12], hR=lms[24], kR=lms[26], aR=lms[28];
+  if (!(sL&&hL&&kL&&aL) && !(sR&&hR&&kR&&aR)) return null;
+
+  const haveL = (sL&&hL&&kL&&aL);
+  const haveR = (sR&&hR&&kR&&aR);
+
+  const kneeL = haveL ? angleDeg(hL, kL, aL) : null;
+  const hipL  = haveL ? angleDeg(sL, hL, kL) : null;
+  const kneeR = haveR ? angleDeg(hR, kR, aR) : null;
+  const hipR  = haveR ? angleDeg(sR, hR, kR) : null;
+
+  // visibility weighting (helps when one leg is occluded)
+  const wL = haveL ? visibilityScore(lms, [11,23,25,27]) : 0;
+  const wR = haveR ? visibilityScore(lms, [12,24,26,28]) : 0;
+
+  function wAvg(a, wa, b, wb) {
+    const num = (a!=null? a*wa : 0) + (b!=null? b*wb : 0);
+    const den = (a!=null? wa : 0)    + (b!=null? wb : 0);
+    return den > 1e-6 ? Math.round(num/den) : null;
+  }
+
+  const knee  = wAvg(kneeL, wL, kneeR, wR) ?? (kneeL ?? kneeR);
+  const hip   = wAvg(hipL,  wL, hipR,  wR) ?? (hipL  ?? hipR);
+  const torso = torsoUprightFromLR(lms);
+  if (knee==null || hip==null || torso==null) return null;
+
+  return { knee, hip, torso, side: "F" };
+}
+
+function lowerBodyEligibleFront(lms) {
+  // OK if EITHER leg is reasonably visible and in-frame
+  const leftOK  = [11,23,25,27].every(i => {
+    const p = lms[i]; return p && (p.visibility ?? 0) > 0.35 && p.x>0 && p.x<1 && p.y>0 && p.y<0.99;
+  });
+  const rightOK = [12,24,26,28].every(i => {
+    const p = lms[i]; return p && (p.visibility ?? 0) > 0.35 && p.x>0 && p.x<1 && p.y>0 && p.y<0.99;
+  });
+  return leftOK || rightOK;
+}
+
 
   function smoothAngles(ang) {
     const N = 5;
@@ -184,67 +280,114 @@ function updateRepState(ang, ts) {
   }
 }
 
+function autoDetectMode(lms) {
+  const sL = scoreSide(lms, "L");
+  const sR = scoreSide(lms, "R");
+
+  const BOTH_OK = Math.min(sL, sR) > 1.2;
+  const DIFF = Math.abs(sL - sR);
+  const next = (BOTH_OK && DIFF < 0.25) ? "front" : "side";
+
+  const prev = modeStickyRef.current.mode;
+  if (next !== prev) {
+    modeStickyRef.current.wins += 1;
+    if (modeStickyRef.current.wins >= 4) {
+      modeStickyRef.current = { mode: next, wins: 0 };
+      viewModeRef.current = next;
+      setViewMode(next);  // updates “Mode: …” pill
+    }
+  } else {
+    if (modeStickyRef.current.wins) modeStickyRef.current.wins = 0;
+  }
+  return modeStickyRef.current.mode;
+}
 
 
-
-  // Call this for each MediaPipe result
-  function handlePoseResults(res) {
+function handlePoseResults(res) {
   if (DEBUG) console.count("[HerHealth] handlePoseResults calls");
   tickFps();
 
   const lms = res?.landmarks?.[0];
   if (!lms) return;
 
-  // use the SIDE-AWARE compute
-  const angRaw = computeAnglesSideAware(lms);
+  // --- Decide front vs side, with hysteresis (your requested block) ---
+  const modeNow = autoDetectMode(lms); // "front" | "side"
+
+  if (modeNow !== viewModeRef.current) {
+    modeWinsRef.current += 1;
+    if (modeWinsRef.current >= 4) {           // require 4 consecutive frames to flip
+      viewModeRef.current = modeNow;          // update fast-path ref
+      setViewMode(modeNow);                   // update UI badge
+      modeWinsRef.current = 0;
+    }
+  } else {
+    // same as last frame → reset wins and ensure UI is in sync
+    if (modeWinsRef.current) modeWinsRef.current = 0;
+    if (viewMode !== viewModeRef.current) setViewMode(viewModeRef.current);
+  }
+
+  const curMode = viewModeRef.current;
+
+  // ① Compute angles with maths for the current mode
+  const angRaw = (curMode === "front")
+    ? computeAnglesFrontView(lms)   // visibility-weighted L/R + torso from midpoints
+    : computeAnglesSideAware(lms);  // best single side + torso from that side
+
   if (!angRaw) return;
 
-  const ang = smoothAngles(angRaw);   // {knee, hip, torso}
-  setSideUsed(angRaw.side);           // "L" or "R"
+  const ang = smoothAngles(angRaw); // { knee, hip, torso }
+  setSideUsed(angRaw.side ?? (curMode === "front" ? "F" : sideStickyRef.current.side));
 
-  const sig = collectSignals(lms, angRaw.side);
+  // ② Signals/baseline: still track ONE side’s Y positions
+  const sideForSignals = (curMode === "front") ? selectStableSide(lms) : angRaw.side;
+  const sig = collectSignals(lms, sideForSignals);
   curSig.current = sig;
 
-// --- Ensure top baseline exists ---
-const atTopKneeNow = ang.knee >= (THRESH.kneeTop - 5); // small slack, still “tall”
-if (!topBaseline.current && atTopKneeNow) {
-  topBaseline.current = { ...curSig.current, torso: ang.torso };
-  if (DEBUG) console.log("[HerHealth] baseline initialised (knee:", ang.knee.toFixed(1), ")");
-}
-// keep baseline fresh whenever you’re clearly back at Top
-if (phaseRef.current === "Top" && atTopKneeNow) {
-  topBaseline.current = { ...curSig.current, torso: ang.torso };
-}
+  // --- Ensure/refresh Top baseline ---
+  const atTopKneeNow = ang.knee >= (THRESH.kneeTop - 5);
+  if (!topBaseline.current && atTopKneeNow) {
+    topBaseline.current = { ...curSig.current, torso: ang.torso };
+    if (DEBUG) console.log("[HerHealth] baseline initialised (knee:", ang.knee.toFixed(1), ")");
+  }
+  if (phaseRef.current === "Top" && atTopKneeNow) {
+    topBaseline.current = { ...curSig.current, torso: ang.torso };
+  }
 
-
-
-
-
-  // update the coords panel to match the chosen side
-  const I = IDX[angRaw.side];
+  // ③ Coords panel uses the side we track for signals
+  const I = IDX[sideForSignals];
   setCoords({
     hip:      `${lms[I.hip].x.toFixed(3)}, ${lms[I.hip].y.toFixed(3)}`,
     knee:     `${lms[I.knee].x.toFixed(3)}, ${lms[I.knee].y.toFixed(3)}`,
     ankle:    `${lms[I.ankle].x.toFixed(3)}, ${lms[I.ankle].y.toFixed(3)}`,
     shoulder: `${lms[I.shoulder].x.toFixed(3)}, ${lms[I.shoulder].y.toFixed(3)}`
   });
+  lastFrameInfoRef.current = {
+  ang,
+  mode: curMode,
+  side: sideForSignals
+};
 
-  const ok = lowerBodyEligible(lms, angRaw.side);
-    if (!ok) {
-      // Just skip this frame; don’t change phase
-      return;
-    }
+  // ④ Mode-specific eligibility
+  const ok = (curMode === "front")
+    ? lowerBodyEligibleFront(lms)
+    : lowerBodyEligible(lms, angRaw.side);
+  if (!ok) return;
 
-
-  // update the HUD numbers + counter
+  // ⑤ Rep-state unchanged
   updateRepState(ang, performance.now());
 
-  // optional diagnostics (capped)
+  lastFrameInfoRef.current = {
+    ang,
+    mode: viewModeRef.current,      // the stabilised mode we’re using
+    side: sideForSignals            // the side we chose for signals
+  };
+
   setSession(s => s.startedAt
     ? { ...s, frames: s.frames.length < 2000 ? [...s.frames, { t: Date.now(), ...ang, side: angRaw.side }] : s.frames }
     : s
   );
 }
+
 
 
   // session controls
@@ -256,8 +399,6 @@ function startSession() {
   topBaseline.current = null;     // ← reset baseline
   setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
 }
-
-
 
   function endSessionAndSave() {
     setSession(s => {
@@ -431,6 +572,23 @@ function computeAnglesSideAware(lms) {
                   utils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS);
                   handlePoseResults(res);
 
+                  const info = lastFrameInfoRef.current;
+
+                if (info?.ang) {
+                const { knee, hip, torso } = info.ang;
+                const side = info.side ?? "L";
+                const mode = info.mode ?? "front";
+
+                ctx.fillStyle = "rgba(0,0,0,0.6)";
+                ctx.fillRect(10, 30, 260, 90);
+                ctx.fillStyle = "white";
+                ctx.font = "14px system-ui, sans-serif";
+                ctx.fillText(`Knee: ${knee}°`, 18, 50);
+                ctx.fillText(`Hip:  ${hip}°`, 18, 68);
+                ctx.fillText(`Torso:${torso}°`, 18, 86);
+                ctx.fillText(`Phase: ${phaseRef.current}  Side: ${side}  Mode: ${mode}`, 18, 104);
+              }
+
                   // --- DEBUG OVERLAY (after handlePoseResults) ---
                     const base = topBaseline.current;
                     const sig  = curSig.current || {};
@@ -511,25 +669,39 @@ function computeAnglesSideAware(lms) {
   }, []);
 
   return (
-  <div className="w-full max-w-3xl mx-auto p-4 grid gap-3">
-    <div className="relative rounded-2xl overflow-hidden shadow">
-      <video ref={videoRef} className="w-full h-auto" playsInline muted />
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
-    </div>
+    <>
+      <div className="fixed top-3 right-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl">
+          Mode: {viewMode === "front" ? "Front" : "Side"}
+      </div>
+      <button
+        className="fixed bottom-3 right-3 px-3 py-1 rounded-xl bg-black/60 text-white"
+        onClick={() => setViewMode(m => (m === "front" ? "side" : "front"))}
+      >
+        Mode Button: {viewMode === "front" ? "Front" : "Side"}
+      </button>
 
-    {/* HUD */}
-    <div className="fixed bottom-3 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl flex gap-3 items-center">
-      <button onClick={startSession} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Start</button>
-      <button onClick={endSessionAndSave} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">End &amp; Save</button>
-      <span>FPS: {fps}</span>
-      <span>Reps: {repCount}</span>
-      <span>Phase: {phase}</span>
-    </div>
 
-    {/* existing status + coords panels */}
-    <div className="text-sm opacity-70">...</div>
-    <div className="grid grid-cols-2 gap-2 text-sm rounded-2xl border p-3">...</div>
-  </div>
+
+      <div className="w-full max-w-3xl mx-auto p-4 grid gap-3">
+        <div className="relative rounded-2xl overflow-hidden shadow">
+          <video ref={videoRef} className="w-full h-auto" playsInline muted />
+          <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
+        </div>
+
+        {/* HUD */}
+        <div className="fixed bottom-3 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl flex gap-3 items-center">
+          <button onClick={startSession} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Start</button>
+          <button onClick={endSessionAndSave} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">End &amp; Save</button>
+          <span>FPS: {fps}</span>
+          <span>Reps: {repCount}</span>
+          <span>Phase: {phase}</span>
+        </div>
+
+        {/* existing status + coords panels */}
+        <div className="text-sm opacity-70">...</div>
+        <div className="grid grid-cols-2 gap-2 text-sm rounded-2xl border p-3">...</div>
+      </div>
+    </>
   );
 
 }
