@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-vision";
+import { scoreRepAgainstRef, classifyScore,} from "../utils/squatSimilarity"; 
 
 
 export default function SquatCam() {
@@ -14,6 +15,9 @@ export default function SquatCam() {
   const rafRef = useRef(null);
   const landmarkerRef = useRef(null);
   const phaseRef = useRef("Top");
+  const currentRepTraceRef = useRef([]);
+  const currentRepStats = useRef(null);
+
 
   // current view mode for UI + logic
   const [viewMode, setViewMode] = useState("front");      // "front" | "side"
@@ -22,6 +26,7 @@ export default function SquatCam() {
   const modeStickyRef = useRef({ mode: "front", wins: 0 });
   const modeWinsRef   = useRef(0);
   const lastFrameInfoRef = useRef({ ang: null, mode: "front", side: "L" });
+  const [lastRepScore, setLastRepScore] = useState(null);
 
 
   //state variables for rendering
@@ -55,6 +60,10 @@ const refUrl = viewMode === "front"
   ? "/reference/reference_clips_front.json"
   : "/reference/reference_clips.json";
 const [refTargets, setRefTargets] = useState(null);
+useEffect(() => {
+  if (!refTargets) return;
+  console.log("[Similarity] refTargets loaded", Object.keys(refTargets));
+}, [refTargets]);
 
 useEffect(() => {
   let mounted = true;
@@ -236,7 +245,7 @@ function lowerBodyEligibleFront(lms) {
     const inst = 1000 / Math.max(dt, 1);
     setFps(f => Math.round(0.8 * f + 0.2 * inst)); // gentle smoothing
   }
-function updateRepState(ang, ts) {
+function updateRepState(ang, ts, onRepComplete) {
   let cur = phaseRef.current;
 
   const atTopKnee = ang.knee >= THRESH.kneeTop;
@@ -267,11 +276,19 @@ function updateRepState(ang, ts) {
     if (bottomSince.current && ts - bottomSince.current >= THRESH.minBottomMs) {
       if (!atBotKnee) cur = "Up";
     }
-  } else if (cur === "Up" && topOK) {
+   } else if (cur === "Up" && topOK) {
     cur = "Top";
     setRepCount(c => c + 1);
     setSession(s => ({ ...s, reps: [...s.reps, { t: ts, knee: ang.knee, hip: ang.hip, torso: ang.torso }] }));
+
+    console.log("[HerHealth] REP FINISHED", {
+    t: ts,
+    knee: ang.knee,
+    hip: ang.hip,
+    torso: ang.torso
+  });
   }
+
 
   if (cur !== phaseRef.current) {
     phaseRef.current = cur;
@@ -373,8 +390,46 @@ function handlePoseResults(res) {
     : lowerBodyEligible(lms, angRaw.side);
   if (!ok) return;
 
+  currentRepTraceRef.current.push({
+    knee:  ang.knee,
+    hip:   ang.hip,
+    torso: ang.torso,
+  });
+
   // ⑤ Rep-state unchanged
-  updateRepState(ang, performance.now());
+    // ⑤ Rep-state + scoring
+  updateRepState(ang, performance.now(), (repSummary) => {
+    // 1. Grab & reset the full trace for this rep
+    const userTrace = currentRepTraceRef.current;
+    currentRepTraceRef.current = [];
+
+    // 2. Pick the right reference trace (front/side file)
+    //    I'm assuming your JSON looks like: { aggregate: [ {knee, hip, torso}, ... ] }
+    const refTrace = refTargets?.aggregate || [];
+
+    // 3. Compute a 0–100 similarity score
+    const score = scoreRepAgainstRef(userTrace, refTrace);
+    const label = classifyScore(score); // "green" | "amber" | "red"
+
+    // 4. Remember last score for UI
+    setLastRepScore({ score, label });
+
+    // 5. Save full rep info to the session
+    setSession(s => ({
+      ...s,
+      reps: [
+        ...s.reps,
+        {
+          ...repSummary,
+          trace: userTrace,
+          score,
+          label,
+          viewMode: viewModeRef.current,
+        },
+      ],
+    }));
+  });
+
 
   lastFrameInfoRef.current = {
     ang,
@@ -397,6 +452,7 @@ function startSession() {
   phaseRef.current = "Top";
   bottomSince.current = null;
   topBaseline.current = null;     // ← reset baseline
+  currentRepStats.current = null;
   setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
 }
 
@@ -681,6 +737,13 @@ function computeAnglesSideAware(lms) {
       </button>
 
 
+    {refTargets && (
+      <div className="fixed top-16 right-3 z-50 bg-emerald-700/80 text-white px-3 py-2 rounded-xl text-xs">
+        <div>Ref mode: {viewMode}</div>
+        <div>Athlete: {refTargets.athlete}</div>
+        <div>Clips: {refTargets.clips?.length ?? 0}</div>
+      </div>
+    )}
 
       <div className="w-full max-w-3xl mx-auto p-4 grid gap-3">
         <div className="relative rounded-2xl overflow-hidden shadow">
@@ -696,6 +759,13 @@ function computeAnglesSideAware(lms) {
           <span>Reps: {repCount}</span>
           <span>Phase: {phase}</span>
         </div>
+
+        {lastRepScore && (
+          <span>
+            Score: {lastRepScore.score} ({lastRepScore.label})
+          </span>
+        )}
+
 
         {/* existing status + coords panels */}
         <div className="text-sm opacity-70">...</div>
