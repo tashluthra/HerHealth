@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-vision";
 import { scoreRepAgainstRef, classifyScore,} from "../utils/squatSimilarity"; 
+import { scoreSessionReps } from "../metrics/repQuality";
 
 
 export default function SquatCam() {
@@ -245,7 +246,7 @@ function lowerBodyEligibleFront(lms) {
     const inst = 1000 / Math.max(dt, 1);
     setFps(f => Math.round(0.8 * f + 0.2 * inst)); // gentle smoothing
   }
-function updateRepState(ang, ts, onRepComplete) {
+function updateRepState(ang, ts) {
   let cur = phaseRef.current;
 
   const atTopKnee = ang.knee >= THRESH.kneeTop;
@@ -267,6 +268,27 @@ function updateRepState(ang, ts, onRepComplete) {
   const bottomOK = atBotKnee && hipDrop >= GEO.minHipDrop && footLift <= GEO.maxFootLift;
   const topOK    = atTopKnee; // we already refresh the baseline whenever atTopKneeNow
 
+    // --- Track per-rep stats (min knee, max torso, timing) ---
+  if (!currentRepStats.current && phaseRef.current === "Top" && leaveTop) {
+    // Just leaving Top -> new rep starting
+    currentRepStats.current = {
+      startTs: ts,
+      minKnee: ang.knee,
+      maxTorso: ang.torso,
+    };
+  } else if (currentRepStats.current) {
+    // Rep in progress: update stats each frame
+    currentRepStats.current.minKnee = Math.min(
+      currentRepStats.current.minKnee,
+      ang.knee
+    );
+    currentRepStats.current.maxTorso = Math.max(
+      currentRepStats.current.maxTorso,
+      ang.torso
+    );
+  }
+
+
   if (cur === "Top" && leaveTop) {
     cur = "Down";
   } else if (cur === "Down" && bottomOK) {
@@ -276,17 +298,36 @@ function updateRepState(ang, ts, onRepComplete) {
     if (bottomSince.current && ts - bottomSince.current >= THRESH.minBottomMs) {
       if (!atBotKnee) cur = "Up";
     }
-   } else if (cur === "Up" && topOK) {
+  } else if (cur === "Up" && topOK) {
     cur = "Top";
-    setRepCount(c => c + 1);
-    setSession(s => ({ ...s, reps: [...s.reps, { t: ts, knee: ang.knee, hip: ang.hip, torso: ang.torso }] }));
 
-    console.log("[HerHealth] REP FINISHED", {
-    t: ts,
-    knee: ang.knee,
-    hip: ang.hip,
-    torso: ang.torso
-  });
+    // Finalise this rep’s stats
+    let repSummary = {
+      tEnd: ts,
+      knee: ang.knee,
+      hip: ang.hip,
+      torso: ang.torso,
+    };
+
+    if (currentRepStats.current) {
+      repSummary = {
+        ...repSummary,
+        tStart: currentRepStats.current.startTs ?? null,
+        minKnee: currentRepStats.current.minKnee,
+        maxTorso: currentRepStats.current.maxTorso,
+        durationMs: currentRepStats.current.startTs != null
+          ? ts - currentRepStats.current.startTs
+          : null,
+      };
+    }
+
+    currentRepStats.current = null;
+
+    setRepCount(c => c + 1);
+    setSession(s => ({
+      ...s,
+      reps: [...s.reps, repSummary],
+    }));
   }
 
 
@@ -370,7 +411,7 @@ function handlePoseResults(res) {
     topBaseline.current = { ...curSig.current, torso: ang.torso };
   }
 
-  // ③ Coords panel uses the side we track for signals
+  //Coords panel uses the side we track for signals
   const I = IDX[sideForSignals];
   setCoords({
     hip:      `${lms[I.hip].x.toFixed(3)}, ${lms[I.hip].y.toFixed(3)}`,
@@ -384,7 +425,7 @@ function handlePoseResults(res) {
   side: sideForSignals
 };
 
-  // ④ Mode-specific eligibility
+  //Mode-specific eligibility
   const ok = (curMode === "front")
     ? lowerBodyEligibleFront(lms)
     : lowerBodyEligible(lms, angRaw.side);
@@ -396,8 +437,7 @@ function handlePoseResults(res) {
     torso: ang.torso,
   });
 
-  // ⑤ Rep-state unchanged
-    // ⑤ Rep-state + scoring
+    //Rep-state + scoring
   updateRepState(ang, performance.now(), (repSummary) => {
     // 1. Grab & reset the full trace for this rep
     const userTrace = currentRepTraceRef.current;
@@ -457,19 +497,49 @@ function startSession() {
 }
 
   function endSessionAndSave() {
-    setSession(s => {
-      const durationSec = s.startedAt ? Math.round((Date.now() - s.startedAt) / 1000) : 0;
-      const summary = { reps: repCount, meanFps: fps, durationSec, date: new Date().toISOString() };
-      const finished = { ...s, endedAt: Date.now(), summary };
-      try {
-        const key = "herhealth_sessions";
-        const all = JSON.parse(localStorage.getItem(key) || "[]");
-        all.push(finished);
-        localStorage.setItem(key, JSON.stringify(all));
-      } catch (_) {}
-      return finished;
-    });
-  }
+  setSession(s => {
+    const now = Date.now();
+    const durationSec = s.startedAt ? Math.round((now - s.startedAt) / 1000) : 0;
+
+    let summary = {
+      reps: repCount,
+      meanFps: fps,
+      durationSec,
+      date: new Date().toISOString(),
+    };
+
+    //compute quality using the reference JSON (current view mode)
+    let quality = null;
+    try {
+      if (refTargets?.aggregate) {
+        quality = scoreSessionReps(s.reps, refTargets.aggregate);
+        if (quality) {
+          summary = {
+            ...summary,
+            avgQuality: quality.avgQuality,
+            goodReps: quality.goodReps,
+          };
+          console.log("[HerHealth] rep quality summary:", quality);
+        }
+      }
+    } catch (e) {
+      console.warn("[HerHealth] quality scoring failed:", e);
+    }
+
+    const finished = { ...s, endedAt: now, summary, quality };
+
+    // Persist to localStorage as before
+    try {
+      const key = "herhealth_sessions";
+      const all = JSON.parse(localStorage.getItem(key) || "[]");
+      all.push(finished);
+      localStorage.setItem(key, JSON.stringify(all));
+    } catch (_) {}
+
+    return finished;
+  });
+}
+
 // --- Side-aware landmark selection ---
 const IDX = {
   L: { shoulder: 11, hip: 23, knee: 25, ankle: 27 },
@@ -508,6 +578,21 @@ function selectStableSide(lms) {
 
   if (side !== prev) sideStickyRef.current.side = side;
   return sideStickyRef.current.side;
+}
+
+function downloadSessions() {
+  try {
+    const sessions = JSON.parse(localStorage.getItem("herhealth_sessions") || "[]");
+    const blob = new Blob([JSON.stringify(sessions, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "herhealth_sessions.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error("Failed to download sessions:", e);
+  }
 }
 
 // --- Angle maths (reuse your angleDeg) ---
@@ -755,6 +840,7 @@ function computeAnglesSideAware(lms) {
         <div className="fixed bottom-3 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl flex gap-3 items-center">
           <button onClick={startSession} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Start</button>
           <button onClick={endSessionAndSave} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">End &amp; Save</button>
+          <button onClick={downloadSessions}className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Download Data</button>
           <span>FPS: {fps}</span>
           <span>Reps: {repCount}</span>
           <span>Phase: {phase}</span>
