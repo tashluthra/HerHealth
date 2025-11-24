@@ -57,17 +57,21 @@ export function scoreFromError(avgErr, maxErr = 25) {
 
 // 4) Convenience: full pipeline in one call
 export function scoreRepAgainstRef(userTrace, refTrace, steps = 50) {
-  console.log("[SIM] scoreRepAgainstRef called", { userLen: userRep.length, refLen: refRep.length });
   const uNorm = normaliseTrace(userTrace, steps);
   const rNorm = normaliseTrace(refTrace, steps);
-  const err   = averageAngleError(uNorm, rNorm);
+  console.log("[SIM] scoreRepAgainstRef called", {
+    userLen: uNorm.length,
+    refLen: rNorm.length,
+  });
+  const err = averageAngleError(uNorm, rNorm);
   return scoreFromError(err);
 }
 
 // 5) Optional: turn score into a label/colour
 export function classifyScore(score) {
-  console.log("[SIM] classifyScore called with", sim);
+  console.log("[SIM] classifyScore called with", score);
   if (score >= 80) return "green";  // excellent
   if (score >= 60) return "amber";  // ok
   return "red";                     // needs work
 }
+

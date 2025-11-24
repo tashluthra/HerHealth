@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-vision";
 import { scoreRepAgainstRef, classifyScore,} from "../utils/squatSimilarity"; 
 import { scoreSessionReps } from "../metrics/repQuality";
+import { checkForm } from "../utils/formChecks";
 
 
 export default function SquatCam() {
@@ -50,6 +51,9 @@ export default function SquatCam() {
     reps: [],         // per-rep metrics
     summary: null
   });
+
+  const [techniqueFirst, setTechniqueFirst] = useState(true);
+  const [lastFormFeedback, setLastFormFeedback] = useState(null);
 
   // smoothing + timing refs
   const smoothBuf = useRef({ knee: [], hip: [], torso: [] });
@@ -131,9 +135,20 @@ const footLiftEmaRef = useRef(0);  // exponential moving average for footLift
   const visOK = pts.every(p => (p.visibility ?? 0) > 0.3); // was 0.5
   const inFrameOK = pts.every(p => p.x>0 && p.x<1 && p.y>0 && p.y<0.99);
   return visOK && inFrameOK;
-}
+  }
 
+  // Front-view knee valgus: positive when knees are closer than feet.
+  function computeValgusMetricFront(lms) {
+    const kL = lms[25], kR = lms[26];
+    const aL = lms[27], aR = lms[28];
+    if (!kL || !kR || !aL || !aR) return null;
 
+    const kneeDist  = Math.abs(kL.x - kR.x);
+    const ankleDist = Math.abs(aL.x - aR.x);
+
+    // If knees come much closer together than feet, this becomes positive.
+    return ankleDist - kneeDist;
+  }
 
 
   // Use LEFT side to match coords panel (11,23,25,27)
@@ -246,97 +261,99 @@ function lowerBodyEligibleFront(lms) {
     const inst = 1000 / Math.max(dt, 1);
     setFps(f => Math.round(0.8 * f + 0.2 * inst)); // gentle smoothing
   }
-function updateRepState(ang, ts) {
-  let cur = phaseRef.current;
+  //Rep-state + scoring
+  function updateRepState(ang, ts, onRepComplete) {
+    let cur = phaseRef.current;
 
-  const atTopKnee = ang.knee >= THRESH.kneeTop;
-  const atBotKnee = ang.knee <= THRESH.kneeBottom;
-  const leaveTop   = ang.knee < (THRESH.kneeTop - 5); // 5° hysteresis
+    const atTopKnee = ang.knee >= THRESH.kneeTop;
+    const atBotKnee = ang.knee <= THRESH.kneeBottom;
+    const leaveTop  = ang.knee < (THRESH.kneeTop - 5); // 5° hysteresis
 
-  // light anti-fake using the last Top baseline
-  const base = topBaseline.current;
-  const sig  = curSig.current || {};
-  const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;           // + = down
-  const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
-  const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
+    // light anti-fake using the last Top baseline
+    const base = topBaseline.current;
+    const sig  = curSig.current || {};
+    const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;           // + = down
+    const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
+    const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
 
-  const rawFoot   = Math.max(ankleLift, heelLift || 0);
-  const alpha = 0.2; // smoothing factor
-  footLiftEmaRef.current = alpha * rawFoot + (1 - alpha) * (footLiftEmaRef.current ?? 0);
-  const footLift = footLiftEmaRef.current;
+    const rawFoot   = Math.max(ankleLift, heelLift || 0);
+    const alpha = 0.2; // smoothing factor
+    footLiftEmaRef.current = alpha * rawFoot + (1 - alpha) * (footLiftEmaRef.current ?? 0);
+    const footLift = footLiftEmaRef.current;
 
-  const bottomOK = atBotKnee && hipDrop >= GEO.minHipDrop && footLift <= GEO.maxFootLift;
-  const topOK    = atTopKnee; // we already refresh the baseline whenever atTopKneeNow
+    const bottomOK = atBotKnee && hipDrop >= GEO.minHipDrop && footLift <= GEO.maxFootLift;
+    const topOK    = atTopKnee;
 
     // --- Track per-rep stats (min knee, max torso, timing) ---
-  if (!currentRepStats.current && phaseRef.current === "Top" && leaveTop) {
-    // Just leaving Top -> new rep starting
-    currentRepStats.current = {
-      startTs: ts,
-      minKnee: ang.knee,
-      maxTorso: ang.torso,
-    };
-  } else if (currentRepStats.current) {
-    // Rep in progress: update stats each frame
-    currentRepStats.current.minKnee = Math.min(
-      currentRepStats.current.minKnee,
-      ang.knee
-    );
-    currentRepStats.current.maxTorso = Math.max(
-      currentRepStats.current.maxTorso,
-      ang.torso
-    );
-  }
-
-
-  if (cur === "Top" && leaveTop) {
-    cur = "Down";
-  } else if (cur === "Down" && bottomOK) {
-    cur = "Bottom";
-    bottomSince.current = ts;
-  } else if (cur === "Bottom") {
-    if (bottomSince.current && ts - bottomSince.current >= THRESH.minBottomMs) {
-      if (!atBotKnee) cur = "Up";
-    }
-  } else if (cur === "Up" && topOK) {
-    cur = "Top";
-
-    // Finalise this rep’s stats
-    let repSummary = {
-      tEnd: ts,
-      knee: ang.knee,
-      hip: ang.hip,
-      torso: ang.torso,
-    };
-
-    if (currentRepStats.current) {
-      repSummary = {
-        ...repSummary,
-        tStart: currentRepStats.current.startTs ?? null,
-        minKnee: currentRepStats.current.minKnee,
-        maxTorso: currentRepStats.current.maxTorso,
-        durationMs: currentRepStats.current.startTs != null
-          ? ts - currentRepStats.current.startTs
-          : null,
+    if (!currentRepStats.current && phaseRef.current === "Top" && leaveTop) {
+      // Just leaving Top -> new rep starting
+      currentRepStats.current = {
+        startTs: ts,
+        minKnee: ang.knee,
+        maxTorso: ang.torso,
       };
+    } else if (currentRepStats.current) {
+      // Rep in progress: update stats each frame
+      currentRepStats.current.minKnee = Math.min(
+        currentRepStats.current.minKnee,
+        ang.knee
+      );
+      currentRepStats.current.maxTorso = Math.max(
+        currentRepStats.current.maxTorso,
+        ang.torso
+      );
     }
 
-    currentRepStats.current = null;
+    // Phase transitions
+    if (cur === "Top" && leaveTop) {
+      cur = "Down";
+    } else if (cur === "Down" && bottomOK) {
+      cur = "Bottom";
+      bottomSince.current = ts;
+    } else if (cur === "Bottom") {
+      if (bottomSince.current && ts - bottomSince.current >= THRESH.minBottomMs) {
+        if (!atBotKnee) cur = "Up";
+      }
+    } else if (cur === "Up" && topOK) {
+      cur = "Top";
 
-    setRepCount(c => c + 1);
-    setSession(s => ({
-      ...s,
-      reps: [...s.reps, repSummary],
-    }));
+      // Rep has just finished.
+      let repSummary = {
+        tEnd: ts,
+        knee: ang.knee,
+        hip: ang.hip,
+        torso: ang.torso,
+      };
+
+      if (currentRepStats.current) {
+        repSummary = {
+          ...repSummary,
+          tStart: currentRepStats.current.startTs ?? null,
+          minKnee: currentRepStats.current.minKnee,
+          maxTorso: currentRepStats.current.maxTorso,
+          durationMs: currentRepStats.current.startTs != null
+            ? ts - currentRepStats.current.startTs
+            : null,
+        };
+      }
+
+      currentRepStats.current = null;
+
+      if (typeof onRepComplete === "function") {
+        onRepComplete(repSummary);
+      }
+    }
+
+    if (cur !== phaseRef.current) {
+      phaseRef.current = cur;
+      setPhase(cur);
+      if (DEBUG) console.log("[HerHealth] phase:", cur, {
+        hipDrop: +hipDrop.toFixed(3),
+        footLift: +footLift.toFixed(3),
+      });
+    }
   }
 
-
-  if (cur !== phaseRef.current) {
-    phaseRef.current = cur;
-    setPhase(cur);
-    if (DEBUG) console.log("[HerHealth] phase:", cur, { hipDrop: +hipDrop.toFixed(3), footLift: +footLift.toFixed(3) });
-  }
-}
 
 function autoDetectMode(lms) {
   const sL = scoreSide(lms, "L");
@@ -431,39 +448,74 @@ function handlePoseResults(res) {
     : lowerBodyEligible(lms, angRaw.side);
   if (!ok) return;
 
+  let valgusMetric = null;
+  if (curMode === "front") {
+    valgusMetric = computeValgusMetricFront(lms);
+  }
+
   currentRepTraceRef.current.push({
     knee:  ang.knee,
     hip:   ang.hip,
     torso: ang.torso,
+    valgus: valgusMetric,
   });
-
-    //Rep-state + scoring
-  updateRepState(ang, performance.now(), (repSummary) => {
+    // Rep-state + scoring
+  // Rep-state + scoring + form checks
+updateRepState(ang, performance.now(), (repSummary) => {
     // 1. Grab & reset the full trace for this rep
     const userTrace = currentRepTraceRef.current;
     currentRepTraceRef.current = [];
 
+    // 1a. Derive a simple valgus metric for the rep (max over frames)
+    const valgusValues = userTrace
+      .map(f => f.valgus)
+      .filter(v => v != null);
+
+    const valgusMetric = valgusValues.length
+      ? Math.max(...valgusValues)   // bigger => knees closer than feet
+      : null;
+
+    const repWithValgus = {
+      ...repSummary,
+      valgusMetric,
+    };
+
     // 2. Pick the right reference trace (front/side file)
-    //    I'm assuming your JSON looks like: { aggregate: [ {knee, hip, torso}, ... ] }
     const refTrace = refTargets?.aggregate || [];
 
     // 3. Compute a 0–100 similarity score
     const score = scoreRepAgainstRef(userTrace, refTrace);
     const label = classifyScore(score); // "green" | "amber" | "red"
 
-    // 4. Remember last score for UI
-    setLastRepScore({ score, label });
+    // 4. Form check
+    const form = checkForm({
+      ...repWithValgus,
+      viewMode: viewModeRef.current,
+    });
 
-    // 5. Save full rep info to the session
+    setLastFormFeedback(form);
+    setLastRepScore({ score, label, form });
+
+    // 5. Technique-first logic:
+    //    - If techniqueFirst is on and form is not OK, do NOT count or save the rep.
+    if (techniqueFirst && !form.overallOK) {
+      console.log("[HerHealth] Rep rejected due to form", form);
+      return;
+    }
+
+    // 6. Otherwise, count and store the rep
+    setRepCount(c => c + 1);
+
     setSession(s => ({
       ...s,
       reps: [
         ...s.reps,
         {
-          ...repSummary,
+          ...repWithValgus,
           trace: userTrace,
           score,
           label,
+          form,
           viewMode: viewModeRef.current,
         },
       ],
@@ -840,11 +892,40 @@ function computeAnglesSideAware(lms) {
         <div className="fixed bottom-3 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl flex gap-3 items-center">
           <button onClick={startSession} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Start</button>
           <button onClick={endSessionAndSave} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">End &amp; Save</button>
-          <button onClick={downloadSessions}className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Download Data</button>
+          <button onClick={downloadSessions} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Download Data</button>
+
+          <button
+            onClick={() => setTechniqueFirst(v => !v)}
+            className={`px-3 py-1 rounded-lg border ${
+              techniqueFirst ? "bg-emerald-600/70" : "bg-white/10"
+            }`}
+          >
+            {techniqueFirst ? "Technique first" : "Count all reps"}
+          </button>
+
           <span>FPS: {fps}</span>
           <span>Reps: {repCount}</span>
           <span>Phase: {phase}</span>
         </div>
+
+        {lastRepScore && (
+          <div className="fixed bottom-20 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl text-sm max-w-xs">
+            <div>Score: {lastRepScore.score} ({lastRepScore.label})</div>
+            {lastFormFeedback && !lastFormFeedback.overallOK && (
+              <ul className="mt-1 list-disc list-inside text-xs text-red-200">
+                {lastFormFeedback.issues.map((msg, i) => (
+                  <li key={i}>{msg}</li>
+                ))}
+              </ul>
+            )}
+            {lastFormFeedback && lastFormFeedback.overallOK && (
+              <div className="mt-1 text-xs text-emerald-200">
+                Nice – form looks solid on that rep.
+              </div>
+            )}
+          </div>
+        )}
+
 
         {lastRepScore && (
           <span>
