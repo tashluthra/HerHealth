@@ -310,6 +310,11 @@ function lowerBodyEligibleFront(lms) {
     } else if (cur === "Down" && bottomOK) {
       cur = "Bottom";
       bottomSince.current = ts;
+    } else if (cur === "Down" && atTopKnee && !bottomSince.current) { 
+      cur = "Top";
+      currentRepStats.current = null;
+      topBaseline.current = { ...curSig.current, torso: ang.torso };
+      if (DEBUG) console.log("[HerHealth] Resetting phase to Top (no bottom reached)");
     } else if (cur === "Bottom") {
       if (bottomSince.current && ts - bottomSince.current >= THRESH.minBottomMs) {
         if (!atBotKnee) cur = "Up";
