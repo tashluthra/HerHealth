@@ -10,8 +10,10 @@ export const FORM_THRESHOLDS = {
     // Bigger positive value = knees closer together than feet.
     maxValgusMetric: 0.025,   // ~2.5% of frame width- may drop to 2% later
 
-    sideMaxTorso: 50,
-    maxTorsoDelta: 25,  // max change in torso angle during rep
+    sideMaxTorso: 42, //stricter but allows earlier catching of forward lean
+    maxTorsoDelta: 18,  // max change in torso angle during rep
+    bottomTorsoMax: 42,  // max torso angle allowed at the bottom of squat
+
 };
 
 // rep = { minKnee, maxTorso, valgusMetric?, ... }
@@ -73,6 +75,18 @@ export function checkForm(rep, opts = {}) {
         }
     }
 
+    let bottomTorsoOK = true;
+        if (isSide && typeof rep.bottomTorso === "number") {
+            bottomTorsoOK = rep.bottomTorso <= cfg.bottomTorsoMax;
+
+            if (!bottomTorsoOK) {
+                issues.push(
+                    "At the bottom, try to keep your chest from leaning too far forward- maintain a more upright back position."
+                );
+            }
+        }
+
+
     // 3) Knee valgus (only meaningful in front view)
     // valgusMetric is bigger when knees come closer together than feet.
     let valgusOK = true;
@@ -86,13 +100,14 @@ export function checkForm(rep, opts = {}) {
         }
     }
 
-    const overallOK = depthOK && forwardLeanOK && sideBackOK && torsoDeltaOK && valgusOK;
+    const overallOK = depthOK && forwardLeanOK && sideBackOK && torsoDeltaOK && bottomTorsoOK && valgusOK;
 
     return {
         depthOK,
         forwardLeanOK,
         sideBackOK,
         torsoDeltaOK,
+        bottomTorsoOK,
         valgusOK,
         overallOK,
         issues,
