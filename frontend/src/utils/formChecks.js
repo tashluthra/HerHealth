@@ -35,6 +35,20 @@ export function checkForm(rep, opts = {}) {
   if (!forwardLeanOK) {
     issues.push("Try to keep your chest a little more upright.");
   }
+    //Side view- extra check for back bending / excessive lean
+  let sideBackOK = true;
+    if (rep.viewMode === "side" && typeof rep.maxTorso === "number") {
+        const SIDE_MAX_TORSO = 55; // degrees from vertical (side squat)
+
+        sideBackOK = rep.maxTorso <= SIDE_MAX_TORSO;
+
+        if (!sideBackOK) {
+        issues.push(
+            "From the side view, you’re leaning too far forwards – try to keep your back more neutral."
+        );
+        }
+    }
+
 
   // 3) Knee valgus (only meaningful in front view)
   // valgusMetric is bigger when knees come closer together than feet.

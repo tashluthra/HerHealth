@@ -74,4 +74,3 @@ export function classifyScore(score) {
   if (score >= 60) return "amber";  // ok
   return "red";                     // needs work
 }
-

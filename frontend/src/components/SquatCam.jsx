@@ -926,14 +926,6 @@ function computeAnglesSideAware(lms) {
           </div>
         )}
 
-
-        {lastRepScore && (
-          <span>
-            Score: {lastRepScore.score} ({lastRepScore.label})
-          </span>
-        )}
-
-
         {/* existing status + coords panels */}
         <div className="text-sm opacity-70">...</div>
         <div className="grid grid-cols-2 gap-2 text-sm rounded-2xl border p-3">...</div>
