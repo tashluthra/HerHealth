@@ -1,18 +1,16 @@
-// Simple thresholds for form checks.
-// You can tweak these later or make them user-specific.
+//Tweak values later to make user specific
 export const FORM_THRESHOLDS = {
-    // Depth: smaller knee angle at the bottom = deeper squat.
-    // Will cahnge with coaching angles later
-    minDepthKnee: 115,       // degrees or less at bottom = "deep enough"
-    // Forward lean: torso angle from vertical. Bigger = more forward.
-    maxForwardTorso: 45,     // keep chest within ~45° of upright
-    // Valgus: our metric is "feet width – knee width" in normalised x.
-    // Bigger positive value = knees closer together than feet.
-    maxValgusMetric: 0.025,   // ~2.5% of frame width- may drop to 2% later
+    //Depth: smaller knee angle at the bottom = deeper squat.
+    minDepthKnee: 115,   
+    //Forward lean: torso angle from vertical. Bigger = more forward.
+    maxForwardTorso: 45,     
+    //Valgus: our metric is "feet width – knee width" in normalised x.
+    //Bigger positive value = knees closer together than feet.
+    maxValgusMetric: 0.025,   //2.5% of frame width- may drop to 2% later
 
     sideMaxTorso: 42, //stricter but allows earlier catching of forward lean
-    maxTorsoDelta: 18,  // max change in torso angle during rep
-    bottomTorsoMax: 42,  // max torso angle allowed at the bottom of squat
+    maxTorsoDelta: 18,  //max change in torso angle during rep
+    bottomTorsoMax: 42,  //max torso angle allowed at the bottom of squat
 
 };
 
@@ -38,8 +36,9 @@ export function checkForm(rep, opts = {}) {
         issues.push("Go a bit deeper- aim to bend your knees more at the bottom.");
     }
 
-    // 2) Forward lean – applies in both views
+    // 2) Forward lean – side view only
     const forwardLeanOK =
+        isSide &&
         typeof rep.maxTorso === "number" &&
         rep.maxTorso <= cfg.maxForwardTorso;
 

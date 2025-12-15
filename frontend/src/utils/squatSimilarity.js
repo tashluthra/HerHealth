@@ -1,7 +1,26 @@
-//Resample a trace to a fixed number of steps
-// trace = [{ knee, hip, torso }, ...]
-export function normaliseTrace(trace, steps = 50) {
+// squatSimilarity.js
+// Mode-aware trajectory similarity with resampling + weighted mean absolute error.
+// Supports:
+// - side:  hip, knee, ankle, torso
+// - front: valgus, symmetry, pelvic, depth
+
+const MODE_SPECS = {
+  side: {
+    keys: ["knee", "hip", "torso", "ankle"],
+    weights: { knee: 0.35, hip: 0.35, torso: 0.20, ankle: 0.10 },
+    maxErr: 25, // degrees-ish; tune later with data
+  },
+  front: {
+    keys: ["valgus", "symmetry", "pelvic", "depth"],
+    weights: { valgus: 0.40, symmetry: 0.30, pelvic: 0.20, depth: 0.10 },
+    maxErr: 0.25, // these are normalised ratios; tune later with data
+  },
+};
+
+// Generic resample for a list of keys (linear interpolation per channel)
+export function normaliseTrace(trace, keys, steps = 60) {
   if (!trace || trace.length === 0) return [];
+  if (!keys || keys.length === 0) return [];
   if (trace.length === steps) return trace;
 
   const out = [];
@@ -11,66 +30,86 @@ export function normaliseTrace(trace, steps = 50) {
     const nextIdx = Math.min(idx + 1, trace.length - 1);
     const alpha = t - idx;
 
-    const a = trace[idx];
-    const b = trace[nextIdx];
+    const a = trace[idx] || {};
+    const b = trace[nextIdx] || {};
 
-    out.push({
-      knee:  a.knee  + (b.knee  - a.knee)  * alpha,
-      hip:   a.hip   + (b.hip   - a.hip)   * alpha,
-      torso: a.torso + (b.torso - a.torso) * alpha,
-    });
+    const frame = {};
+    for (const k of keys) {
+      const av = a[k];
+      const bv = b[k];
+      // If either is missing, keep null so scorer can ignore that channel safely.
+      frame[k] =
+        typeof av === "number" && typeof bv === "number"
+          ? av + (bv - av) * alpha
+          : null;
+    }
+    out.push(frame);
   }
   return out;
 }
 
-// 2) Average angular error between two normalised traces
-export function averageAngleError(userTrace, refTrace) {
+function meanAbsDiff(a, b) {
+  return Math.abs(a - b);
+}
+
+// Weighted mean absolute error across channels and time
+export function averageWeightedError(userTrace, refTrace, keys, weights) {
   const n = Math.min(userTrace.length, refTrace.length);
   if (!n) return null;
 
   let sum = 0;
+  let count = 0;
+
   for (let i = 0; i < n; i++) {
-    const u = userTrace[i];
-    const r = refTrace[i];
-    const kneeDiff  = Math.abs(u.knee  - r.knee);
-    const hipDiff   = Math.abs(u.hip   - r.hip);
-    const torsoDiff = Math.abs(u.torso - r.torso);
+    const u = userTrace[i] || {};
+    const r = refTrace[i] || {};
 
-    // weights: knee most important, then hip, then torso
-    const weighted =
-      0.5 * kneeDiff +
-      0.3 * hipDiff +
-      0.2 * torsoDiff;
+    let frameErr = 0;
+    let frameW = 0;
 
-    sum += weighted;
+    for (const k of keys) {
+      const uv = u[k];
+      const rv = r[k];
+      if (typeof uv !== "number" || typeof rv !== "number") continue;
+
+      const w = weights[k] ?? 0;
+      frameErr += w * meanAbsDiff(uv, rv);
+      frameW += w;
+    }
+
+    // Only count frame if we had at least one valid channel
+    if (frameW > 1e-6) {
+      sum += frameErr / frameW; // normalise by present weights
+      count += 1;
+    }
   }
-  return sum / n; // mean weighted error in degrees
+
+  return count ? sum / count : null;
 }
 
-// 3) Map error → 0–100 score
-export function scoreFromError(avgErr, maxErr = 25) {
+// Map error -> 0–100
+export function scoreFromError(avgErr, maxErr) {
   if (avgErr == null) return 0;
   const clamped = Math.min(Math.max(avgErr, 0), maxErr);
   const score = 100 * (1 - clamped / maxErr);
   return Math.round(score);
 }
 
-// 4) Convenience: full pipeline in one call
-export function scoreRepAgainstRef(userTrace, refTrace, steps = 50) {
-  const uNorm = normaliseTrace(userTrace, steps);
-  const rNorm = normaliseTrace(refTrace, steps);
-  console.log("[SIM] scoreRepAgainstRef called", {
-    userLen: uNorm.length,
-    refLen: rNorm.length,
-  });
-  const err = averageAngleError(uNorm, rNorm);
-  return scoreFromError(err);
+// Main entry point
+export function scoreRepAgainstRef(userTrace, refTrace, mode = "side", steps = 60) {
+  const spec = MODE_SPECS[mode] || MODE_SPECS.side;
+  const keys = spec.keys;
+  const weights = spec.weights;
+
+  const uNorm = normaliseTrace(userTrace, keys, steps);
+  const rNorm = normaliseTrace(refTrace, keys, steps);
+
+  const err = averageWeightedError(uNorm, rNorm, keys, weights);
+  return scoreFromError(err, spec.maxErr);
 }
 
-// 5) Optional: turn score into a label/colour
 export function classifyScore(score) {
-  console.log("[SIM] classifyScore called with", score);
-  if (score >= 80) return "green";  // excellent
-  if (score >= 60) return "amber";  // ok
-  return "red";                     // needs work
+  if (score >= 80) return "green";
+  if (score >= 60) return "amber";
+  return "red";
 }

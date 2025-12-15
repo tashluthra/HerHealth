@@ -7,10 +7,6 @@ import { checkForm } from "../utils/formChecks";
 
 export default function SquatCam() {
 
-  // === NEW: runtime-loaded reference targets ===
-  const [refAgg, setRefAgg] = useState(null);   // will hold data.aggregate
-  const [refErr, setRefErr] = useState(null); 
-
   //refs to DOM elements and other mutable objects
   const videoRef = useRef(null); //<video> element that shows the webcam stream
   const canvasRef = useRef(null); //<canvas> overlay for drawing lines
@@ -19,10 +15,12 @@ export default function SquatCam() {
   const phaseRef = useRef("Top");
   const currentRepTraceRef = useRef([]);
   const currentRepStats = useRef(null);
+  const repModeRef = useRef(null); //"front" | "side" for the current rep (locked)
 
 
-  // current view mode for UI + logic
-  const [viewMode, setViewMode] = useState("front");      // "front" | "side"
+
+  //current view mode for UI + logic
+  const [viewMode, setViewMode] = useState("front");      //"front" | "side"
   const viewModeRef = useRef("front"); 
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
   const modeStickyRef = useRef({ mode: "front", wins: 0 });
@@ -56,34 +54,31 @@ export default function SquatCam() {
   const [lastFormFeedback, setLastFormFeedback] = useState(null);
 
   // smoothing + timing refs
-  const smoothBuf = useRef({ knee: [], hip: [], torso: [] });
+  const smoothBuf = useRef({ knee: [], hip: [], torso: [], ankle: [] });
   const lastFrameTs = useRef(performance.now());
   const bottomSince = useRef(null);
 
 
-const refUrl = viewMode === "front"
-  ? "/reference/reference_clips_front.json"
-  : "/reference/reference_clips.json";
-const [refTargets, setRefTargets] = useState(null);
-useEffect(() => {
-  if (!refTargets) return;
-  console.log("[Similarity] refTargets loaded", Object.keys(refTargets));
-}, [refTargets]);
+// Reference templates produced by build_reference_templates.py
+const [refTemplates, setRefTemplates] = useState(null);
 
 useEffect(() => {
   let mounted = true;
-  async function fetchRefTargets() {
+
+  (async () => {
     try {
-      const res = await fetch(refUrl);
+      const res = await fetch("/reference/reference_clips.json");
       const data = await res.json();
-      if (mounted) setRefTargets(data);
+      if (mounted) setRefTemplates(data);
+      console.log("[Similarity] reference_clips.json loaded keys:", Object.keys(data));
     } catch (e) {
-      // handle error if needed
+      console.warn("[Similarity] Failed to load reference_clips.json", e);
     }
-  }
-  fetchRefTargets();
+  })();
+
   return () => { mounted = false; };
-}, [refUrl]);
+}, []);
+
 
 
 const THRESH = {       // temporary hold values (will change with algorithm from video)
@@ -111,10 +106,8 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
 // live per-frame signals + baseline captured at Top
 const curSig = useRef({ hipY: null, ankleY: null, heelY: null });
 const topBaseline = useRef(null);
-const footLiftEmaRef = useRef(0);  // exponential moving average for footLift
-
-
-
+const frontBaselineRef = useRef({ sym0: null }); //front view symmetry baseline
+const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
 
   const DEBUG = true;
 
@@ -137,18 +130,40 @@ const footLiftEmaRef = useRef(0);  // exponential moving average for footLift
   return visOK && inFrameOK;
   }
 
-  // Front-view knee valgus: positive when knees are closer than feet.
-  function computeValgusMetricFront(lms) {
-    const kL = lms[25], kR = lms[26];
-    const aL = lms[27], aR = lms[28];
-    if (!kL || !kR || !aL || !aR) return null;
 
-    const kneeDist  = Math.abs(kL.x - kR.x);
-    const ankleDist = Math.abs(aL.x - aR.x);
+  function computeFrontFeatures(lms) {
+    const lh = lms[23], rh = lms[24];
+    const lk = lms[25], rk = lms[26];
+    const la = lms[27], ra = lms[28];
 
-    // If knees come much closer together than feet, this becomes positive.
-    return ankleDist - kneeDist;
+    if (!(lh && rh && lk && rk && la && ra)) return null;
+
+    // valgus (same definition as reference builder)
+    const stanceWidth = Math.abs(la.x - ra.x) + 1e-6;
+    const leftValgus  = (lk.x - la.x) / stanceWidth;
+    const rightValgus = (rk.x - ra.x) / stanceWidth;
+    const valgus = (leftValgus + rightValgus) / 2;
+
+    // symmetry baseline correction (matches Python: raw_sym - baseline_sym)
+    const hipWidth = Math.abs(lh.x - rh.x) + 1e-6;
+    const rawSym = (lk.x - rk.x) / hipWidth;
+
+    if (frontBaselineRef.current.sym0 == null) {
+      frontBaselineRef.current.sym0 = rawSym;
+    }
+    const symmetry = rawSym - frontBaselineRef.current.sym0;
+
+    // pelvic drop normalised (matches Python: (lh.y - rh.y) / h ; lms coords already normalised)
+    const pelvic = (lh.y - rh.y);
+
+    // depth proxy: hip centre y (normalised)
+    const hipCentreY = (lh.y + rh.y) / 2;
+    const depth = hipCentreY;
+
+    return { valgus, symmetry, pelvic, depth };
   }
+
+
 
 
   // Use LEFT side to match coords panel (11,23,25,27)
@@ -181,6 +196,43 @@ function visibilityScore(lms, idxs) {
   const vals = idxs.map(i => (lms[i]?.visibility ?? 0));
   return vals.reduce((a,b)=>a+b,0) / Math.max(vals.length,1);
 }
+
+function buildRefTraceForMode(refTemplates, mode) {
+  if (!refTemplates) return [];
+
+  const ref = refTemplates[mode];
+  const T = ref?.trajectories;
+  if (!T) return [];
+
+  const n =
+    mode === "side"
+      ? (T.knee?.length ?? 0)
+      : (T.valgus?.length ?? 0);
+
+  if (!n) return [];
+
+  const frames = [];
+  for (let i = 0; i < n; i++) {
+    if (mode === "side") {
+      frames.push({
+        knee:  T.knee?.[i]  ?? null,
+        hip:   T.hip?.[i]   ?? null,
+        ankle: T.ankle?.[i] ?? null,
+        torso: T.torso?.[i] ?? null,
+      });
+    } else {
+      frames.push({
+        valgus:   T.valgus?.[i]   ?? null,
+        symmetry: T.symmetry?.[i] ?? null,
+        pelvic:   T.pelvic?.[i]   ?? null,
+        depth:    T.depth?.[i]    ?? null,
+      });
+    }
+  }
+
+  return frames;
+}
+
 
 function computeAnglesFrontView(lms) {
   // Left
@@ -229,7 +281,8 @@ function lowerBodyEligibleFront(lms) {
 
   function smoothAngles(ang) {
     const N = 5;
-    ["knee","hip","torso"].forEach(k => {
+    ["knee","hip","torso","ankle"].forEach(k => {
+      if (ang[k] == null) return;
       const buf = smoothBuf.current[k];
       buf.push(ang[k]);
       if (buf.length > N) buf.shift();
@@ -239,6 +292,9 @@ function lowerBodyEligibleFront(lms) {
       knee: Math.round(avg(smoothBuf.current.knee)),
       hip: Math.round(avg(smoothBuf.current.hip)),
       torso: Math.round(avg(smoothBuf.current.torso)),
+      ankle: smoothBuf.current.ankle.length
+        ? Math.round(avg(smoothBuf.current.ankle))
+        : null,
     };
   }
 
@@ -292,6 +348,9 @@ function lowerBodyEligibleFront(lms) {
         minKnee: ang.knee,
         maxTorso: ang.torso,
       };
+      repModeRef.current = viewModeRef.current;
+      frontBaselineRef.current.sym0 = null; 
+      currentRepTraceRef.current = [];
     } else if (currentRepStats.current) {
       // Rep in progress: update stats each frame
       currentRepStats.current.minKnee = Math.min(
@@ -313,6 +372,7 @@ function lowerBodyEligibleFront(lms) {
     } else if (cur === "Down" && atTopKnee && !bottomSince.current) { 
       cur = "Top";
       currentRepStats.current = null;
+      repModeRef.current = null;
       topBaseline.current = { ...curSig.current, torso: ang.torso };
       if (DEBUG) console.log("[HerHealth] Resetting phase to Top (no bottom reached)");
     } else if (cur === "Bottom") {
@@ -347,6 +407,7 @@ function lowerBodyEligibleFront(lms) {
       if (typeof onRepComplete === "function") {
         onRepComplete(repSummary);
       }
+      repModeRef.current = null;
     }
 
     if (cur !== phaseRef.current) {
@@ -389,24 +450,27 @@ function handlePoseResults(res) {
 
   const lms = res?.landmarks?.[0];
   if (!lms) return;
+  setSession(s => (s.startedAt ? s : { ...s, startedAt: Date.now() }));
 
   // --- Decide front vs side, with hysteresis (your requested block) ---
-  const modeNow = autoDetectMode(lms); // "front" | "side"
+  const modeNow = repModeRef.current ? repModeRef.current : autoDetectMode(lms);
 
-  if (modeNow !== viewModeRef.current) {
-    modeWinsRef.current += 1;
-    if (modeWinsRef.current >= 4) {           // require 4 consecutive frames to flip
-      viewModeRef.current = modeNow;          // update fast-path ref
-      setViewMode(modeNow);                   // update UI badge
-      modeWinsRef.current = 0;
+  if (!repModeRef.current) {
+    if (modeNow !== viewModeRef.current) {
+      modeWinsRef.current += 1;
+      if (modeWinsRef.current >= 4) {           // require 4 consecutive frames to flip
+        viewModeRef.current = modeNow;          // update fast-path ref
+        setViewMode(modeNow);                   // update UI badge
+        modeWinsRef.current = 0;
+      }
+    } else {
+      // same as last frame → reset wins and ensure UI is in sync
+      if (modeWinsRef.current) modeWinsRef.current = 0;
+      if (viewMode !== viewModeRef.current) setViewMode(viewModeRef.current);
     }
-  } else {
-    // same as last frame → reset wins and ensure UI is in sync
-    if (modeWinsRef.current) modeWinsRef.current = 0;
-    if (viewMode !== viewModeRef.current) setViewMode(viewModeRef.current);
   }
 
-  const curMode = viewModeRef.current;
+  const curMode = repModeRef.current ?? viewModeRef.current;
 
   // ① Compute angles with maths for the current mode
   const angRaw = (curMode === "front")
@@ -453,79 +517,88 @@ function handlePoseResults(res) {
     : lowerBodyEligible(lms, angRaw.side);
   if (!ok) return;
 
-  let valgusMetric = null;
-  if (curMode === "front") {
-    valgusMetric = computeValgusMetricFront(lms);
+  if (currentRepStats.current) {
+    if (curMode === "front") {
+      const f = computeFrontFeatures(lms);
+      if (!f) return;
+      currentRepTraceRef.current.push({
+        valgus: f.valgus,
+        symmetry: f.symmetry,
+        pelvic: f.pelvic,
+        depth: f.depth,
+      });
+    } else {
+      currentRepTraceRef.current.push({
+        knee: ang.knee,
+        hip: ang.hip,
+        torso: ang.torso,
+        ankle: ang.ankle ?? null, //angle is smoothed- ankle is in angRaw now
+      });
+    }
   }
 
-  currentRepTraceRef.current.push({
-    knee:  ang.knee,
-    hip:   ang.hip,
-    torso: ang.torso,
-    valgus: valgusMetric,
-  });
-    // Rep-state + scoring
   // Rep-state + scoring + form checks
 updateRepState(ang, performance.now(), (repSummary) => {
-    // 1. Grab & reset the full trace for this rep
-    const userTrace = currentRepTraceRef.current;
-    currentRepTraceRef.current = [];
+  // 1. Grab & reset the full trace for this rep
+  const repMode = repModeRef.current ?? viewModeRef.current;
+  const userTrace = currentRepTraceRef.current;
+  currentRepTraceRef.current = [];
 
-    // 1a. Derive a simple valgus metric for the rep (max over frames)
-    const valgusValues = userTrace
-      .map(f => f.valgus)
-      .filter(v => v != null);
+  // 1a. Derive a simple valgus metric for the rep (max over frames)
+  const isFront = repMode === "front";
 
-    const valgusMetric = valgusValues.length
-      ? Math.max(...valgusValues)   // bigger => knees closer than feet
-      : null;
+  const valgusValues = isFront
+    ? userTrace.map(f => f.valgus).filter(v => typeof v === "number")
+    : [];
 
-    const repWithValgus = {
-      ...repSummary,
-      valgusMetric,
-    };
+  const peakValgus = valgusValues.length ? Math.max(...valgusValues) : null;
+  const meanValgus = valgusValues.length
+    ? valgusValues.reduce((a, b) => a + b, 0) / valgusValues.length
+    : null;
 
-    // 2. Pick the right reference trace (front/side file)
-    const refTrace = refTargets?.aggregate || [];
+  const repWithValgus = { ...repSummary, peakValgus, meanValgus };
 
-    // 3. Compute a 0–100 similarity score
-    const score = scoreRepAgainstRef(userTrace, refTrace);
-    const label = classifyScore(score); // "green" | "amber" | "red"
 
-    // 4. Form check
-    const form = checkForm({
-      ...repWithValgus,
-      viewMode: viewModeRef.current,
-    });
+  // 2. Pick the right reference trace (front / side)
+  const refTrace = buildRefTraceForMode(refTemplates, repMode);
 
-    setLastFormFeedback(form);
-    setLastRepScore({ score, label, form });
+  // 3. Compute a 0–100 similarity score
+  const score = scoreRepAgainstRef(userTrace, refTrace, repMode, 60);
+  const label = classifyScore(score);
 
-    // 5. Technique-first logic:
-    //    - If techniqueFirst is on and form is not OK, do NOT count or save the rep.
-    if (techniqueFirst && !form.overallOK) {
-      console.log("[HerHealth] Rep rejected due to form", form);
-      return;
-    }
-
-    // 6. Otherwise, count and store the rep
-    setRepCount(c => c + 1);
-
-    setSession(s => ({
-      ...s,
-      reps: [
-        ...s.reps,
-        {
-          ...repWithValgus,
-          trace: userTrace,
-          score,
-          label,
-          form,
-          viewMode: viewModeRef.current,
-        },
-      ],
-    }));
+  // 4. Form check
+  const form = checkForm({
+    ...repWithValgus,
+    viewMode: repMode,
   });
+
+  setLastFormFeedback(form);
+  setLastRepScore({ score, label, form });
+
+  // 5. Technique-first logic
+  if (techniqueFirst && !form.overallOK) {
+    console.log("[HerHealth] Rep rejected due to form", form);
+    return;
+  }
+
+  // 6. Otherwise, count and store the rep
+  setRepCount(c => c + 1);
+
+  setSession(s => ({
+    ...s,
+    reps: [
+      ...s.reps,
+      {
+        ...repWithValgus,
+        trace: userTrace,
+        score,
+        label,
+        form,
+        viewMode: repMode,
+      },
+    ],
+  }));
+});
 
 
   lastFrameInfoRef.current = {
@@ -548,18 +621,22 @@ function startSession() {
   setPhase("Top");
   phaseRef.current = "Top";
   bottomSince.current = null;
-  topBaseline.current = null;     // ← reset baseline
+  topBaseline.current = null;
+  frontBaselineRef.current = { sym0: null };
   currentRepStats.current = null;
+  repModeRef.current = null;
   setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
 }
 
   function endSessionAndSave() {
-  setSession(s => {
-    const now = Date.now();
-    const durationSec = s.startedAt ? Math.round((now - s.startedAt) / 1000) : 0;
+    setSession(s => {
+      if (s.endedAt) return s; //already ended
+      const now = Date.now();
+      const startedAt = s.startedAt ?? now; //fallback so duration isn't always 0
+      const durationSec = Math.round((now - startedAt) / 1000);
 
     let summary = {
-      reps: repCount,
+      reps: s.reps.length,    
       meanFps: fps,
       durationSec,
       date: new Date().toISOString(),
@@ -568,8 +645,8 @@ function startSession() {
     //compute quality using the reference JSON (current view mode)
     let quality = null;
     try {
-      if (refTargets?.aggregate) {
-        quality = scoreSessionReps(s.reps, refTargets.aggregate);
+      if (refTemplates?.aggregate) {
+        quality = scoreSessionReps(s.reps, refTemplates.aggregate);
         if (quality) {
           summary = {
             ...summary,
@@ -583,7 +660,7 @@ function startSession() {
       console.warn("[HerHealth] quality scoring failed:", e);
     }
 
-    const finished = { ...s, endedAt: now, summary, quality };
+    const finished = { ...s, startedAt, endedAt: now, summary, quality };
 
     // Persist to localStorage as before
     try {
@@ -602,6 +679,7 @@ const IDX = {
   L: { shoulder: 11, hip: 23, knee: 25, ankle: 27 },
   R: { shoulder: 12, hip: 24, knee: 26, ankle: 28 },
 };
+const TOE = { L: 31, R: 32 }; // MediaPipe foot index landmarks
 
 function getJointsBySide(lms, side) {
   const I = IDX[side];
@@ -656,15 +734,22 @@ function downloadSessions() {
 function computeAnglesSideAware(lms) {
   const side = selectStableSide(lms);
   const { s, h, k, a } = getJointsBySide(lms, side);
-  if (!s || !h || !k || !a) return null;
+  const toe = lms[TOE[side]];
+
+  if (!s || !h || !k || !a || !toe) return null;
 
   const knee = angleDeg(h, k, a);
   const hip  = angleDeg(s, h, k);
+
+  // ankle dorsiflexion proxy: angle at ankle (knee-ankle-toe)
+  const ankle = angleDeg(k, a, toe);
+
   const tx = h.x - s.x, ty = h.y - s.y;
   const torso = Math.round((Math.acos(ty / (Math.hypot(tx, ty) || 1)) * 180) / Math.PI);
 
-  return { knee, hip, torso, side };
+  return { knee, hip, ankle, torso, side };
 }
+
 
 
   useEffect(() => { 
@@ -879,13 +964,15 @@ function computeAnglesSideAware(lms) {
       </button>
 
 
-    {refTargets && (
+    {refTemplates && (
       <div className="fixed top-16 right-3 z-50 bg-emerald-700/80 text-white px-3 py-2 rounded-xl text-xs">
-        <div>Ref mode: {viewMode}</div>
-        <div>Athlete: {refTargets.athlete}</div>
-        <div>Clips: {refTargets.clips?.length ?? 0}</div>
+        <div>Ref loaded ✓</div>
+        <div>Mode: {viewMode}</div>
+        <div>Front file: {refTemplates.front?.file}</div>
+        <div>Side file: {refTemplates.side?.file}</div>
       </div>
     )}
+
 
       <div className="w-full max-w-3xl mx-auto p-4 grid gap-3">
         <div className="relative rounded-2xl overflow-hidden shadow">
