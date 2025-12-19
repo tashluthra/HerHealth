@@ -8,7 +8,7 @@ const MODE_SPECS = {
   side: {
     keys: ["knee", "hip", "torso", "ankle"],
     weights: { knee: 0.35, hip: 0.35, torso: 0.20, ankle: 0.10 },
-    maxErr: 25, // degrees-ish; tune later with data
+    maxErr: 0.35, // degrees-ish; tune later with data
   },
   front: {
     keys: ["valgus", "symmetry", "pelvic", "depth"],
@@ -17,7 +17,6 @@ const MODE_SPECS = {
   },
 };
 
-// Generic resample for a list of keys (linear interpolation per channel)
 export function normaliseTrace(trace, keys, steps = 60) {
   if (!trace || trace.length === 0) return [];
   if (!keys || keys.length === 0) return [];
@@ -37,7 +36,6 @@ export function normaliseTrace(trace, keys, steps = 60) {
     for (const k of keys) {
       const av = a[k];
       const bv = b[k];
-      // If either is missing, keep null so scorer can ignore that channel safely.
       frame[k] =
         typeof av === "number" && typeof bv === "number"
           ? av + (bv - av) * alpha
@@ -45,8 +43,61 @@ export function normaliseTrace(trace, keys, steps = 60) {
     }
     out.push(frame);
   }
+
+  //Baseline normalisation (REMOVE absolute offsets)
+  const base = {};
+  for (const k of keys) {
+    base[k] = typeof out[0]?.[k] === "number" ? out[0][k] : null;
+  }
+
+  for (const frame of out) {
+    for (const k of keys) {
+      if (typeof frame[k] === "number" && typeof base[k] === "number") {
+        frame[k] = frame[k] - base[k];
+      }
+    }
+  }
+
   return out;
 }
+
+// Scale each channel to 0–1 within this rep so we compare shape, not absolute angles.
+function normaliseByRange(trace, keys) {
+  if (!trace?.length) return trace;
+
+  // find min/max per key (ignore nulls)
+  const mins = {};
+  const maxs = {};
+  for (const k of keys) {
+    mins[k] = Infinity;
+    maxs[k] = -Infinity;
+  }
+
+  for (const f of trace) {
+    for (const k of keys) {
+      const v = f?.[k];
+      if (typeof v !== "number") continue;
+      if (v < mins[k]) mins[k] = v;
+      if (v > maxs[k]) maxs[k] = v;
+    }
+  }
+
+  return trace.map(f => {
+    const out = { ...f };
+    for (const k of keys) {
+      const v = f?.[k];
+      if (typeof v !== "number") { out[k] = null; continue; }
+
+      const lo = mins[k], hi = maxs[k];
+      const range = (hi - lo);
+
+      // if channel barely changes, set it to 0 (it carries no shape info)
+      out[k] = range > 1e-6 ? (v - lo) / range : 0;
+    }
+    return out;
+  });
+}
+
 
 function meanAbsDiff(a, b) {
   return Math.abs(a - b);
@@ -104,7 +155,11 @@ export function scoreRepAgainstRef(userTrace, refTrace, mode = "side", steps = 6
   const uNorm = normaliseTrace(userTrace, keys, steps);
   const rNorm = normaliseTrace(refTrace, keys, steps);
 
-  const err = averageWeightedError(uNorm, rNorm, keys, weights);
+  // compare shape (0–1 scaled per-channel)
+  const uScaled = normaliseByRange(uNorm, keys);
+  const rScaled = normaliseByRange(rNorm, keys);
+
+  const err = averageWeightedError(uScaled, rScaled, keys, weights);
   return scoreFromError(err, spec.maxErr);
 }
 

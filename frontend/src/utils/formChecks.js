@@ -37,13 +37,15 @@ export function checkForm(rep, opts = {}) {
     }
 
     // 2) Forward lean – side view only
-    const forwardLeanOK =
-        isSide &&
+    let forwardLeanOK = true; // front view: don't fail on this
+    if (isSide) {
+    forwardLeanOK =
         typeof rep.maxTorso === "number" &&
         rep.maxTorso <= cfg.maxForwardTorso;
 
     if (!forwardLeanOK) {
         issues.push("Try to keep your chest a little more upright.");
+    }
     }
 
     // 2b) Side view – extra check for back bending / excessive lean

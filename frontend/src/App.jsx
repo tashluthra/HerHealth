@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import UsersDemo from "./UsersDemo";
 import SquatCam from "./components/SquatCam";
+import ErrorBoundary from "./ErrorBoundary";
 
 
 const API = import.meta.env.VITE_API_URL || "https://herhealth-api.onrender.com";
@@ -70,6 +71,7 @@ export default function App() {
         </div>
       </header>
 
+      <ErrorBoundary>
         <main className="mx-auto max-w-3xl p-4 space-y-4">
         {/* Week 3 camera component */}
         <SquatCam />
@@ -79,6 +81,7 @@ export default function App() {
         <Box title="/version" data={results.version.data} error={results.version.error} />
         <UsersDemo />
       </main>
+      </ErrorBoundary>
 
     </div>
   );

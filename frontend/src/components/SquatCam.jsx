@@ -17,12 +17,31 @@ export default function SquatCam() {
   const currentRepStats = useRef(null);
   const repModeRef = useRef(null); //"front" | "side" for the current rep (locked)
 
+  const [simDebug, setSimDebug] = useState(null); //DEBUG- CAN BE REMOVED LATER!!
+  const frontDbgRef = useRef({ eligibleOk: 0, eligibleNo: 0, featOk: 0, featNo: 0 });
+  const [frontDbg, setFrontDbg] = useState(frontDbgRef.current);
+
+  const [crash, setCrash] = useState(null); //ALSO REMOVE LATER!!
+    useEffect(() => {
+      const onErr = (e) => setCrash(e?.message || String(e));
+      const onRej = (e) => setCrash(e?.reason?.message || String(e?.reason || e));
+
+      window.addEventListener("error", onErr);
+      window.addEventListener("unhandledrejection", onRej);
+
+      return () => {
+        window.removeEventListener("error", onErr);
+        window.removeEventListener("unhandledrejection", onRej);
+      };
+    }, []);
 
 
   //current view mode for UI + logic
   const [viewMode, setViewMode] = useState("front");      //"front" | "side"
+ 
   const viewModeRef = useRef("front"); 
-  useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
+    useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
+ 
   const modeStickyRef = useRef({ mode: "front", wins: 0 });
   const modeWinsRef   = useRef(0);
   const lastFrameInfoRef = useRef({ ang: null, mode: "front", side: "L" });
@@ -67,7 +86,7 @@ useEffect(() => {
 
   (async () => {
     try {
-      const res = await fetch("/reference/reference_clips.json");
+      const res = await fetch(`/reference/reference_clips.json?v=${Date.now()}`);
       const data = await res.json();
       if (mounted) setRefTemplates(data);
       console.log("[Similarity] reference_clips.json loaded keys:", Object.keys(data));
@@ -79,9 +98,13 @@ useEffect(() => {
   return () => { mounted = false; };
 }, []);
 
+  const refTemplatesRef = useRef(null);
+    useEffect(() => {
+      refTemplatesRef.current = refTemplates;
+    }, [refTemplates]);
 
 
-const THRESH = {       // temporary hold values (will change with algorithm from video)
+const REP_DETECTION = {       // temporary hold values (will change with algorithm from video)
   kneeTop: 168,        // can replace with professional values
   kneeBottom: 115,     
   torsoStay: 25,
@@ -90,7 +113,7 @@ const THRESH = {       // temporary hold values (will change with algorithm from
   minHipDrop: 0.04
 };
 
-const GEO = {
+const SAFETY_LIMITS = {
   minHipDrop: 0.04,    // was 0.04
   maxFootLift: 0.6,   // was 0.05
   minTorsoDelta: 3     // was 4 (your torso delta is often small)
@@ -204,34 +227,22 @@ function buildRefTraceForMode(refTemplates, mode) {
   const T = ref?.trajectories;
   if (!T) return [];
 
-  const n =
-    mode === "side"
-      ? (T.knee?.length ?? 0)
-      : (T.valgus?.length ?? 0);
+  const keys = mode === "side"
+    ? ["knee", "hip", "torso", "ankle"]
+    : ["valgus", "symmetry", "pelvic", "depth"];
 
+  const n = Math.max(...keys.map(k => (T[k]?.length ?? 0)));
   if (!n) return [];
 
   const frames = [];
   for (let i = 0; i < n; i++) {
-    if (mode === "side") {
-      frames.push({
-        knee:  T.knee?.[i]  ?? null,
-        hip:   T.hip?.[i]   ?? null,
-        ankle: T.ankle?.[i] ?? null,
-        torso: T.torso?.[i] ?? null,
-      });
-    } else {
-      frames.push({
-        valgus:   T.valgus?.[i]   ?? null,
-        symmetry: T.symmetry?.[i] ?? null,
-        pelvic:   T.pelvic?.[i]   ?? null,
-        depth:    T.depth?.[i]    ?? null,
-      });
-    }
+    const frame = {};
+    for (const k of keys) frame[k] = T[k]?.[i] ?? null;
+    frames.push(frame);
   }
-
   return frames;
 }
+
 
 
 function computeAnglesFrontView(lms) {
@@ -318,107 +329,115 @@ function lowerBodyEligibleFront(lms) {
     setFps(f => Math.round(0.8 * f + 0.2 * inst)); // gentle smoothing
   }
   //Rep-state + scoring
-  function updateRepState(ang, ts, onRepComplete) {
-    let cur = phaseRef.current;
+  function updateRepState(lms, ang, ts, onRepComplete) {
+  let cur = phaseRef.current;
 
-    const atTopKnee = ang.knee >= THRESH.kneeTop;
-    const atBotKnee = ang.knee <= THRESH.kneeBottom;
-    const leaveTop  = ang.knee < (THRESH.kneeTop - 5); // 5° hysteresis
+  const atTopKnee = ang.knee >= REP_DETECTION.kneeTop;
+  const atBotKnee = ang.knee <= REP_DETECTION.kneeBottom;
+  const leaveTop  = ang.knee < (REP_DETECTION.kneeTop - 5);
 
-    // light anti-fake using the last Top baseline
-    const base = topBaseline.current;
-    const sig  = curSig.current || {};
-    const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;           // + = down
-    const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
-    const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
+  // Anti-fake signals
+  const base = topBaseline.current;
+  const sig  = curSig.current || {};
 
-    const rawFoot   = Math.max(ankleLift, heelLift || 0);
-    const alpha = 0.2; // smoothing factor
-    footLiftEmaRef.current = alpha * rawFoot + (1 - alpha) * (footLiftEmaRef.current ?? 0);
-    const footLift = footLiftEmaRef.current;
+  const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;
+  const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
+  const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
 
-    const bottomOK = atBotKnee && hipDrop >= GEO.minHipDrop && footLift <= GEO.maxFootLift;
-    const topOK    = atTopKnee;
+  const rawFoot = Math.max(ankleLift, heelLift || 0);
+  const alpha = 0.2;
+  footLiftEmaRef.current = alpha * rawFoot + (1 - alpha) * (footLiftEmaRef.current ?? 0);
+  const footLift = footLiftEmaRef.current;
 
-    // --- Track per-rep stats (min knee, max torso, timing) ---
-    if (!currentRepStats.current && phaseRef.current === "Top" && leaveTop) {
-      // Just leaving Top -> new rep starting
-      currentRepStats.current = {
-        startTs: ts,
-        minKnee: ang.knee,
-        maxTorso: ang.torso,
-      };
-      repModeRef.current = viewModeRef.current;
-      frontBaselineRef.current.sym0 = null; 
-      currentRepTraceRef.current = [];
-    } else if (currentRepStats.current) {
-      // Rep in progress: update stats each frame
-      currentRepStats.current.minKnee = Math.min(
-        currentRepStats.current.minKnee,
-        ang.knee
-      );
-      currentRepStats.current.maxTorso = Math.max(
-        currentRepStats.current.maxTorso,
-        ang.torso
-      );
-    }
+  const bottomOK =
+    atBotKnee &&
+    hipDrop >= SAFETY_LIMITS.minHipDrop &&
+    footLift <= SAFETY_LIMITS.maxFootLift;
 
-    // Phase transitions
-    if (cur === "Top" && leaveTop) {
-      cur = "Down";
-    } else if (cur === "Down" && bottomOK) {
-      cur = "Bottom";
-      bottomSince.current = ts;
-    } else if (cur === "Down" && atTopKnee && !bottomSince.current) { 
-      cur = "Top";
-      currentRepStats.current = null;
-      repModeRef.current = null;
-      topBaseline.current = { ...curSig.current, torso: ang.torso };
-      if (DEBUG) console.log("[HerHealth] Resetting phase to Top (no bottom reached)");
-    } else if (cur === "Bottom") {
-      if (bottomSince.current && ts - bottomSince.current >= THRESH.minBottomMs) {
-        if (!atBotKnee) cur = "Up";
-      }
-    } else if (cur === "Up" && topOK) {
-      cur = "Top";
-
-      // Rep has just finished.
-      let repSummary = {
-        tEnd: ts,
-        knee: ang.knee,
-        hip: ang.hip,
-        torso: ang.torso,
-      };
-
-      if (currentRepStats.current) {
-        repSummary = {
-          ...repSummary,
-          tStart: currentRepStats.current.startTs ?? null,
-          minKnee: currentRepStats.current.minKnee,
-          maxTorso: currentRepStats.current.maxTorso,
-          durationMs: currentRepStats.current.startTs != null
-            ? ts - currentRepStats.current.startTs
-            : null,
-        };
-      }
-
-      currentRepStats.current = null;
-
-      if (typeof onRepComplete === "function") {
-        onRepComplete(repSummary);
-      }
-      repModeRef.current = null;
-    }
-
-    if (cur !== phaseRef.current) {
-      phaseRef.current = cur;
-      setPhase(cur);
-      if (DEBUG) console.log("[HerHealth] phase:", cur, {
-        hipDrop: +hipDrop.toFixed(3),
-        footLift: +footLift.toFixed(3),
-      });
-    }
+  // Update running min/max *only if rep is active*
+  if (currentRepStats.current) {
+    currentRepStats.current.minKnee = Math.min(currentRepStats.current.minKnee, ang.knee);
+    currentRepStats.current.maxTorso = Math.max(currentRepStats.current.maxTorso, ang.torso);
   }
+
+  // Phase transitions
+  if (cur === "Top" && leaveTop) {
+    cur = "Down";
+
+    // --- start rep (ONLY HERE) ---
+    bottomSince.current = null; // important: reset bottom timer for new rep
+
+    currentRepStats.current = {
+      startTs: ts,
+      minKnee: ang.knee,
+      maxTorso: ang.torso,
+      topTorso: ang.torso, // optional
+    };
+
+    repModeRef.current = viewModeRef.current;   // lock mode for this rep
+    currentRepTraceRef.current = [];            // reset trace for this rep
+
+    // capture baseline for front mode
+    if (repModeRef.current === "front") {
+      const f0 = computeFrontFeatures(lms);
+      frontBaselineRef.current = {
+        valgus0: typeof f0?.valgus === "number" ? f0.valgus : null,
+        sym0:    typeof f0?.symmetry === "number" ? f0.symmetry : null,
+      };
+    } else {
+      frontBaselineRef.current = { valgus0: null, sym0: null };
+    }
+
+  } else if (cur === "Down" && bottomOK) {
+    cur = "Bottom";
+    bottomSince.current = ts;
+
+  } else if (cur === "Down" && atTopKnee && !bottomSince.current) {
+    // aborted rep: never reached bottom
+    cur = "Top";
+    currentRepStats.current = null;
+    repModeRef.current = null;
+    currentRepTraceRef.current = [];
+    topBaseline.current = { ...curSig.current, torso: ang.torso };
+
+  } else if (cur === "Bottom") {
+    if (bottomSince.current && ts - bottomSince.current >= REP_DETECTION.minBottomMs) {
+      if (!atBotKnee) cur = "Up";
+    }
+
+  } else if (cur === "Up" && atTopKnee) {
+    cur = "Top";
+
+    let repSummary = {
+      tEnd: ts,
+      knee: ang.knee,
+      hip: ang.hip,
+      torso: ang.torso,
+    };
+
+    if (currentRepStats.current) {
+      repSummary = {
+        ...repSummary,
+        tStart: currentRepStats.current.startTs ?? null,
+        minKnee: currentRepStats.current.minKnee,
+        maxTorso: currentRepStats.current.maxTorso,
+        durationMs:
+          currentRepStats.current.startTs != null ? ts - currentRepStats.current.startTs : null,
+      };
+    }
+
+    currentRepStats.current = null;
+
+    if (typeof onRepComplete === "function") onRepComplete(repSummary);
+
+    repModeRef.current = null;
+  }
+
+  if (cur !== phaseRef.current) {
+    phaseRef.current = cur;
+    setPhase(cur);
+  }
+}
 
 
 function autoDetectMode(lms) {
@@ -488,7 +507,7 @@ function handlePoseResults(res) {
   curSig.current = sig;
 
   // --- Ensure/refresh Top baseline ---
-  const atTopKneeNow = ang.knee >= (THRESH.kneeTop - 5);
+  const atTopKneeNow = ang.knee >= (REP_DETECTION .kneeTop - 5);
   if (!topBaseline.current && atTopKneeNow) {
     topBaseline.current = { ...curSig.current, torso: ang.torso };
     if (DEBUG) console.log("[HerHealth] baseline initialised (knee:", ang.knee.toFixed(1), ")");
@@ -510,35 +529,76 @@ function handlePoseResults(res) {
   mode: curMode,
   side: sideForSignals
 };
+// FRONT DEBUG (doesn't affect logic)
+if (curMode === "front") {
+  const okFront = lowerBodyEligibleFront(lms);
+  if (okFront) frontDbgRef.current.eligibleOk += 1;
+  else frontDbgRef.current.eligibleNo += 1;
+
+  const f = computeFrontFeatures(lms);
+  const hasAny =
+    f && ["valgus", "symmetry", "pelvic", "depth"].some(k => typeof f[k] === "number");
+
+  if (hasAny) frontDbgRef.current.featOk += 1;
+  else frontDbgRef.current.featNo += 1;
+
+  if ((frontDbgRef.current.eligibleOk + frontDbgRef.current.eligibleNo) % 10 === 0) {
+    setFrontDbg({ ...frontDbgRef.current });
+  }
+}
 
   //Mode-specific eligibility
   const ok = (curMode === "front")
-    ? lowerBodyEligibleFront(lms)
+    ? true
     : lowerBodyEligible(lms, angRaw.side);
-  if (!ok) return;
+
 
   if (currentRepStats.current) {
     if (curMode === "front") {
       const f = computeFrontFeatures(lms);
-      if (!f) return;
+
+      // pull the baseline captured at rep-start (Top -> Down)
+      const b = frontBaselineRef.current ?? {};
+      const sym0 = typeof b.sym0 === "number" ? b.sym0 : null;
+      const valgus0 = typeof b.valgus0 === "number" ? b.valgus0 : null;
+
+      const valgus = typeof f?.valgus === "number" ? f.valgus : null;
+      const symmetry = typeof f?.symmetry === "number" ? f.symmetry : null;
+      const pelvic = typeof f?.pelvic === "number" ? f.pelvic : null;
+      const depth = typeof f?.depth === "number" ? f.depth : null;
+
+      // deltas (only if we have a baseline)
+      const valgusDelta =
+        (typeof valgus === "number" && typeof valgus0 === "number")
+          ? (valgus - valgus0)
+          : null;
+
+      const symmetryDelta =
+        (typeof symmetry === "number" && typeof sym0 === "number")
+          ? (symmetry - sym0)
+          : null;
+
       currentRepTraceRef.current.push({
-        valgus: f.valgus,
-        symmetry: f.symmetry,
-        pelvic: f.pelvic,
-        depth: f.depth,
+        valgus: valgusDelta,       // <-- use delta, not raw
+        symmetry: symmetryDelta,   // <-- use delta, not raw
+        pelvic,
+        depth,
       });
+
     } else {
       currentRepTraceRef.current.push({
-        knee: ang.knee,
-        hip: ang.hip,
-        torso: ang.torso,
-        ankle: ang.ankle ?? null, //angle is smoothed- ankle is in angRaw now
+        knee:  typeof ang?.knee  === "number" ? ang.knee  : null,
+        hip:   typeof ang?.hip   === "number" ? ang.hip   : null,
+        torso: typeof ang?.torso === "number" ? ang.torso : null,
+        ankle: typeof ang?.ankle === "number" ? ang.ankle : null,
       });
     }
   }
 
+    
+
   // Rep-state + scoring + form checks
-updateRepState(ang, performance.now(), (repSummary) => {
+updateRepState(lms, ang, performance.now(), (repSummary) => {
   // 1. Grab & reset the full trace for this rep
   const repMode = repModeRef.current ?? viewModeRef.current;
   const userTrace = currentRepTraceRef.current;
@@ -560,11 +620,22 @@ updateRepState(ang, performance.now(), (repSummary) => {
 
 
   // 2. Pick the right reference trace (front / side)
-  const refTrace = buildRefTraceForMode(refTemplates, repMode);
+  const templates = refTemplatesRef.current;
+  const refTrace = buildRefTraceForMode(templates, repMode);
+
 
   // 3. Compute a 0–100 similarity score
   const score = scoreRepAgainstRef(userTrace, refTrace, repMode, 60);
   const label = classifyScore(score);
+
+  // DEBUG info!!! REMOVE LATER
+  setSimDebug({
+    mode: repMode,
+    userFrames: userTrace.length,
+    refFrames: Array.isArray(refTrace) ? refTrace.length : 0,
+    score,
+  });
+
 
   // 4. Form check
   const form = checkForm({
@@ -952,7 +1023,15 @@ function computeAnglesSideAware(lms) {
   }, []);
 
   return (
+
     <>
+    {crash && (
+      <div className="fixed inset-0 z-[9999] bg-black/90 text-white p-6 overflow-auto">
+        <div className="text-lg font-semibold">App crashed</div>
+        <pre className="mt-3 whitespace-pre-wrap text-sm">{crash}</pre>
+      </div>
+    )}
+    
       <div className="fixed top-3 right-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl">
           Mode: {viewMode === "front" ? "Front" : "Side"}
       </div>
@@ -963,6 +1042,23 @@ function computeAnglesSideAware(lms) {
         Mode Button: {viewMode === "front" ? "Front" : "Side"}
       </button>
 
+    {simDebug && (
+      <div className="fixed bottom-40 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-xs">
+        <div>Similarity debug</div>
+        <div>Mode: {simDebug.mode}</div>
+        <div>User frames: {simDebug.userFrames}</div>
+        <div>Ref frames: {simDebug.refFrames}</div>
+        <div>Score: {simDebug.score}</div>
+      </div>
+    )}
+
+    <div className="fixed bottom-56 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-xs">
+      <div className="font-semibold">Front debug</div>
+      <div>eligible ok: {frontDbg.eligibleOk}</div>
+      <div>eligible no: {frontDbg.eligibleNo}</div>
+      <div>features ok: {frontDbg.featOk}</div>
+      <div>features no: {frontDbg.featNo}</div>
+    </div>
 
     {refTemplates && (
       <div className="fixed top-16 right-3 z-50 bg-emerald-700/80 text-white px-3 py-2 rounded-xl text-xs">
