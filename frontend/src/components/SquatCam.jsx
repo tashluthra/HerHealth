@@ -154,37 +154,37 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
   }
 
 
+  
   function computeFrontFeatures(lms) {
     const lh = lms[23], rh = lms[24];
     const lk = lms[25], rk = lms[26];
     const la = lms[27], ra = lms[28];
-
     if (!(lh && rh && lk && rk && la && ra)) return null;
 
-    // valgus (same definition as reference builder)
     const stanceWidth = Math.abs(la.x - ra.x) + 1e-6;
     const leftValgus  = (lk.x - la.x) / stanceWidth;
     const rightValgus = (rk.x - ra.x) / stanceWidth;
     const valgus = (leftValgus + rightValgus) / 2;
 
-    // symmetry baseline correction (matches Python: raw_sym - baseline_sym)
     const hipWidth = Math.abs(lh.x - rh.x) + 1e-6;
     const rawSym = (lk.x - rk.x) / hipWidth;
 
-    if (frontBaselineRef.current.sym0 == null) {
-      frontBaselineRef.current.sym0 = rawSym;
-    }
-    const symmetry = rawSym - frontBaselineRef.current.sym0;
-
-    // pelvic drop normalised (matches Python: (lh.y - rh.y) / h ; lms coords already normalised)
     const pelvic = (lh.y - rh.y);
+    const depth = (lh.y + rh.y) / 2;
 
-    // depth proxy: hip centre y (normalised)
-    const hipCentreY = (lh.y + rh.y) / 2;
-    const depth = hipCentreY;
-
-    return { valgus, symmetry, pelvic, depth };
+    return {
+      // raw values (used for baselines)
+      symRaw: rawSym,
+      valgusRaw: valgus,
+      // values used during the rep
+      symmetry: rawSym,
+      valgus,
+      pelvic,
+      depth,
+    };
   }
+
+
 
 
 
@@ -379,13 +379,7 @@ function lowerBodyEligibleFront(lms) {
 
     // capture baseline for front mode
     if (repModeRef.current === "front") {
-      const f0 = computeFrontFeatures(lms);
-      frontBaselineRef.current = {
-        valgus0: typeof f0?.valgus === "number" ? f0.valgus : null,
-        sym0:    typeof f0?.symmetry === "number" ? f0.symmetry : null,
-      };
-    } else {
-      frontBaselineRef.current = { valgus0: null, sym0: null };
+      frontBaselineRef.current = { sym0: null, valgus0: null };
     }
 
   } else if (cur === "Down" && bottomOK) {
@@ -515,6 +509,37 @@ function handlePoseResults(res) {
   if (phaseRef.current === "Top" && atTopKneeNow) {
     topBaseline.current = { ...curSig.current, torso: ang.torso };
   }
+  // --- FRONT: capture a clean baseline ONLY while standing still at Top ---
+  if (curMode === "front" && phaseRef.current === "Top" && atTopKneeNow) {
+    const okFront = lowerBodyEligibleFront(lms);
+    if (okFront) {
+      const f0 = computeFrontFeatures(lms);
+
+      // basic "stable" checks using the same signals you already compute
+      const base = topBaseline.current;
+      const sig = curSig.current || {};
+      const hipDrop = base && sig.hipY != null ? (sig.hipY - base.hipY) : 0;
+
+      const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
+      const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
+      const footLift = Math.max(ankleLift, heelLift || 0);
+
+      const stable =
+        Math.abs(hipDrop) < 0.02 &&
+        footLift < 0.02;
+
+      if (
+        stable &&
+        typeof f0?.symRaw === "number" &&
+        typeof f0?.valgusRaw === "number"
+      ) {
+        // only set if not already set (or if you want to keep refreshing it at Top, remove the "== null" checks)
+        if (frontBaselineRef.current.sym0 == null) frontBaselineRef.current.sym0 = f0.symRaw;
+        if (frontBaselineRef.current.valgus0 == null) frontBaselineRef.current.valgus0 = f0.valgusRaw;
+      }
+    }
+  }
+
 
   //Coords panel uses the side we track for signals
   const I = IDX[sideForSignals];
@@ -552,45 +577,55 @@ if (curMode === "front") {
     ? true
     : lowerBodyEligible(lms, angRaw.side);
 
-
   if (currentRepStats.current) {
-    if (curMode === "front") {
-      const f = computeFrontFeatures(lms);
+   if (curMode === "front") {
+    const f = computeFrontFeatures(lms);
+    if (!f) return; // <-- NEW: don't push if we couldn't compute features
 
-      // pull the baseline captured at rep-start (Top -> Down)
-      const b = frontBaselineRef.current ?? {};
-      const sym0 = typeof b.sym0 === "number" ? b.sym0 : null;
-      const valgus0 = typeof b.valgus0 === "number" ? b.valgus0 : null;
+    // --- NEW: initialise baselines once (at the first valid "top" frame ideally) ---
+    if (frontBaselineRef.current.sym0 == null && typeof f.symmetry === "number") {
+      frontBaselineRef.current.sym0 = f.symmetry;
+    }
+    if (frontBaselineRef.current.valgus0 == null && typeof f.valgus === "number") {
+      frontBaselineRef.current.valgus0 = f.valgus;
+    }
+    if (frontBaselineRef.current.pelvic0 == null && typeof f.pelvic === "number") {
+      frontBaselineRef.current.pelvic0 = f.pelvic;
+    }
 
-      const valgus = typeof f?.valgus === "number" ? f.valgus : null;
-      const symmetry = typeof f?.symmetry === "number" ? f.symmetry : null;
-      const pelvic = typeof f?.pelvic === "number" ? f.pelvic : null;
-      const depth = typeof f?.depth === "number" ? f.depth : null;
+    const b = frontBaselineRef.current ?? {};
+    const sym0 = typeof b.sym0 === "number" ? b.sym0 : null;
+    const valgus0 = typeof b.valgus0 === "number" ? b.valgus0 : null;
+    const pelvic0 = typeof b.pelvic0 === "number" ? b.pelvic0 : null;
 
-      // deltas (only if we have a baseline)
-      const valgusDelta =
-        (typeof valgus === "number" && typeof valgus0 === "number")
-          ? (valgus - valgus0)
-          : null;
+    const valgus = typeof f.valgus === "number" ? f.valgus : null;
+    const symmetry = typeof f.symmetry === "number" ? f.symmetry : null;
+    const pelvic = typeof f.pelvic === "number" ? f.pelvic : null;
+    const depth = typeof f.depth === "number" ? f.depth : null;
 
-      const symmetryDelta =
-        (typeof symmetry === "number" && typeof sym0 === "number")
-          ? (symmetry - sym0)
-          : null;
+    // --- CHANGED: use deltas (centred) for front metrics ---
+    const valgusUsed =
+      (typeof valgus === "number" && typeof valgus0 === "number") ? (valgus - valgus0) : null;
 
+    const symmetryUsed =
+      (typeof symmetry === "number" && typeof sym0 === "number") ? (symmetry - sym0) : null;
+
+    const pelvicUsed =
+      (typeof pelvic === "number" && typeof pelvic0 === "number") ? (pelvic - pelvic0) : null;
+
+    currentRepTraceRef.current.push({
+      valgus: valgusUsed,
+      symmetry: symmetryUsed,
+      pelvic: pelvicUsed,
+      depth, // keep raw
+    });
+  }else {
+      // side view trace (already correct)
       currentRepTraceRef.current.push({
-        valgus: valgusDelta,       // <-- use delta, not raw
-        symmetry: symmetryDelta,   // <-- use delta, not raw
-        pelvic,
-        depth,
-      });
-
-    } else {
-      currentRepTraceRef.current.push({
-        knee:  typeof ang?.knee  === "number" ? ang.knee  : null,
-        hip:   typeof ang?.hip   === "number" ? ang.hip   : null,
-        torso: typeof ang?.torso === "number" ? ang.torso : null,
-        ankle: typeof ang?.ankle === "number" ? ang.ankle : null,
+        knee: ang.knee,
+        hip: ang.hip,
+        torso: ang.torso,
+        ankle: ang.ankle,
       });
     }
   }
@@ -625,7 +660,9 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
 
 
   // 3. Compute a 0–100 similarity score
-  const score = scoreRepAgainstRef(userTrace, refTrace, repMode, 60);
+  const result = scoreRepAgainstRef(userTrace, refTrace, repMode, 60);
+  const score = result?.score ?? 0;
+  const err = result?.err ?? null;
   const label = classifyScore(score);
 
   // DEBUG info!!! REMOVE LATER
@@ -633,6 +670,7 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
     mode: repMode,
     userFrames: userTrace.length,
     refFrames: Array.isArray(refTrace) ? refTrace.length : 0,
+    err,
     score,
   });
 

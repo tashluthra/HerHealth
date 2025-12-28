@@ -160,7 +160,9 @@ export function scoreRepAgainstRef(userTrace, refTrace, mode = "side", steps = 6
   const rScaled = normaliseByRange(rNorm, keys);
 
   const err = averageWeightedError(uScaled, rScaled, keys, weights);
-  return scoreFromError(err, spec.maxErr);
+  const score = scoreFromError(err, spec.maxErr);
+
+  return { score, err };
 }
 
 export function classifyScore(score) {
