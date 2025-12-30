@@ -6,8 +6,8 @@
 
 const MODE_SPECS = {
   side: {
-    keys: ["knee", "hip", "torso", "ankle"],
-    weights: { knee: 0.35, hip: 0.35, torso: 0.20, ankle: 0.10 },
+    keys: ["knee", "hip", "ankle", "torso"],
+    weights: { knee: 0.35, hip: 0.35, ankle: 0.10, torso: 0.20},
     maxErr: 0.35, // degrees-ish; tune later with data
   },
   front: {

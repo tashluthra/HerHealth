@@ -3,6 +3,7 @@ import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-
 import { scoreRepAgainstRef, classifyScore,} from "../utils/squatSimilarity"; 
 import { scoreSessionReps } from "../metrics/repQuality";
 import { checkForm } from "../utils/formChecks";
+import { resampleTrace } from "../utils/trajectory";
 
 
 export default function SquatCam() {
@@ -35,6 +36,9 @@ export default function SquatCam() {
       };
     }, []);
 
+  const [repDebug, setRepDebug] = useState(null); // remove later 
+
+  const TARGET_N = 60;
 
   //current view mode for UI + logic
   const [viewMode, setViewMode] = useState("front");      //"front" | "side"
@@ -152,8 +156,6 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
   const inFrameOK = pts.every(p => p.x>0 && p.x<1 && p.y>0 && p.y<0.99);
   return visOK && inFrameOK;
   }
-
-
   
   function computeFrontFeatures(lms) {
     const lh = lms[23], rh = lms[24];
@@ -174,19 +176,16 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
 
     return {
       // raw values (used for baselines)
-      symRaw: rawSym,
       valgusRaw: valgus,
+      symRaw: rawSym,
       // values used during the rep
-      symmetry: rawSym,
       valgus,
+      symmetry: rawSym,
       pelvic,
       depth,
     };
+
   }
-
-
-
-
 
 
   // Use LEFT side to match coords panel (11,23,25,27)
@@ -377,10 +376,7 @@ function lowerBodyEligibleFront(lms) {
     repModeRef.current = viewModeRef.current;   // lock mode for this rep
     currentRepTraceRef.current = [];            // reset trace for this rep
 
-    // capture baseline for front mode
-    if (repModeRef.current === "front") {
-      frontBaselineRef.current = { sym0: null, valgus0: null };
-    }
+    
 
   } else if (cur === "Down" && bottomOK) {
     cur = "Bottom";
@@ -432,7 +428,6 @@ function lowerBodyEligibleFront(lms) {
     setPhase(cur);
   }
 }
-
 
 function autoDetectMode(lms) {
   const sL = scoreSide(lms, "L");
@@ -624,8 +619,8 @@ if (curMode === "front") {
       currentRepTraceRef.current.push({
         knee: ang.knee,
         hip: ang.hip,
-        torso: ang.torso,
         ankle: ang.ankle,
+        torso: ang.torso,
       });
     }
   }
@@ -634,16 +629,38 @@ if (curMode === "front") {
 
   // Rep-state + scoring + form checks
 updateRepState(lms, ang, performance.now(), (repSummary) => {
-  // 1. Grab & reset the full trace for this rep
   const repMode = repModeRef.current ?? viewModeRef.current;
-  const userTrace = currentRepTraceRef.current;
+
+  // 1) Copy then clear the raw user trace
+  const rawUserTrace = currentRepTraceRef.current.slice();
   currentRepTraceRef.current = [];
 
-  // 1a. Derive a simple valgus metric for the rep (max over frames)
-  const isFront = repMode === "front";
+  // 2) Build raw reference trace
+  const templates = refTemplatesRef.current;
+  const rawRefTrace = buildRefTraceForMode(templates, repMode);
 
-  const valgusValues = isFront
-    ? userTrace.map(f => f.valgus).filter(v => typeof v === "number")
+  // 3) Decide keys and resample BOTH to 60
+  const keys = (repMode === "front")
+    ? ["valgus", "symmetry", "pelvic", "depth"]
+    : ["knee", "hip", "torso", "ankle"];
+
+  const user60 = resampleTrace(rawUserTrace, keys, 60);
+  const ref60  = resampleTrace(rawRefTrace, keys, 60);
+
+  // 4) Score (handle both “number” and “{score, err}” returns)
+  const result = scoreRepAgainstRef(user60, ref60, repMode, 60);
+
+  const scoreNum =
+    typeof result === "number" ? result : (result?.score ?? 0);
+
+  const err =
+    typeof result === "object" && result ? (result.err ?? null) : null;
+
+  const label = classifyScore(scoreNum);
+
+  // 5) Valgus stats should use the SAME trace you scored (user60)
+  const valgusValues = (repMode === "front")
+    ? user60.map(f => f.valgus).filter(v => typeof v === "number" && Number.isFinite(v))
     : [];
 
   const peakValgus = valgusValues.length ? Math.max(...valgusValues) : null;
@@ -653,44 +670,18 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
 
   const repWithValgus = { ...repSummary, peakValgus, meanValgus };
 
+  // 6) (Optional) coverage debug should also use user60/ref60
+  // const userCov = traceCoverage(user60, keys);
+  // const refCov  = traceCoverage(ref60, keys);
 
-  // 2. Pick the right reference trace (front / side)
-  const templates = refTemplatesRef.current;
-  const refTrace = buildRefTraceForMode(templates, repMode);
-
-
-  // 3. Compute a 0–100 similarity score
-  const result = scoreRepAgainstRef(userTrace, refTrace, repMode, 60);
-  const score = result?.score ?? 0;
-  const err = result?.err ?? null;
-  const label = classifyScore(score);
-
-  // DEBUG info!!! REMOVE LATER
-  setSimDebug({
-    mode: repMode,
-    userFrames: userTrace.length,
-    refFrames: Array.isArray(refTrace) ? refTrace.length : 0,
-    err,
-    score,
-  });
-
-
-  // 4. Form check
-  const form = checkForm({
-    ...repWithValgus,
-    viewMode: repMode,
-  });
+  // 7) Form check + UI
+  const form = checkForm({ ...repWithValgus, viewMode: repMode });
 
   setLastFormFeedback(form);
-  setLastRepScore({ score, label, form });
+  setLastRepScore({ score: scoreNum, label, err, form });
 
-  // 5. Technique-first logic
-  if (techniqueFirst && !form.overallOK) {
-    console.log("[HerHealth] Rep rejected due to form", form);
-    return;
-  }
+  if (techniqueFirst && !form.overallOK) return;
 
-  // 6. Otherwise, count and store the rep
   setRepCount(c => c + 1);
 
   setSession(s => ({
@@ -699,15 +690,17 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
       ...s.reps,
       {
         ...repWithValgus,
-        trace: userTrace,
-        score,
+        trace: user60,     // ✅ store the 60-frame trace
+        score: scoreNum,
         label,
+        err,
         form,
         viewMode: repMode,
       },
     ],
   }));
 });
+
 
 
   lastFrameInfoRef.current = {
@@ -1086,7 +1079,11 @@ function computeAnglesSideAware(lms) {
         <div>Mode: {simDebug.mode}</div>
         <div>User frames: {simDebug.userFrames}</div>
         <div>Ref frames: {simDebug.refFrames}</div>
-        <div>Score: {simDebug.score}</div>
+        <div>
+          Score: {simDebug.score?.score ?? simDebug.score}
+          <br />
+          Error: {simDebug.score?.err ?? ""}
+        </div>
       </div>
     )}
 
@@ -1114,6 +1111,29 @@ function computeAnglesSideAware(lms) {
           <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
         </div>
 
+    {repDebug && (
+      <div className="fixed top-28 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-xs max-w-sm">
+        <div className="font-semibold">Resample debug</div>
+        <div>mode: {repDebug.mode}</div>
+        <div>raw frames: {repDebug.rawLen}</div>
+        <div>60 frames: {repDebug.r60Len}</div>
+
+        <div className="mt-2 font-semibold">valid points</div>
+        {repDebug.keys.map(k => (
+          <div key={k}>
+            {k}: raw {repDebug.validCounts[k]?.raw ?? 0} → 60 {repDebug.validCounts[k]?.r60 ?? 0}
+          </div>
+        ))}
+
+        <div className="mt-2 font-semibold">min/max</div>
+        {repDebug.keys.map(k => (
+          <div key={k}>
+            {k}: raw {repDebug.ranges[k]?.raw ? `${repDebug.ranges[k].raw.min.toFixed(3)}..${repDebug.ranges[k].raw.max.toFixed(3)}` : "none"}
+            {"  "} | 60 {repDebug.ranges[k]?.r60 ? `${repDebug.ranges[k].r60.min.toFixed(3)}..${repDebug.ranges[k].r60.max.toFixed(3)}` : "none"}
+          </div>
+        ))}
+      </div>
+    )}
         {/* HUD */}
         <div className="fixed bottom-3 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl flex gap-3 items-center">
           <button onClick={startSession} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Start</button>
@@ -1136,7 +1156,13 @@ function computeAnglesSideAware(lms) {
 
         {lastRepScore && (
           <div className="fixed bottom-20 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl text-sm max-w-xs">
-            <div>Score: {lastRepScore.score} ({lastRepScore.label})</div>
+            <div>
+              Score: {typeof lastRepScore.score === "number"
+                ? lastRepScore.score
+                : (lastRepScore.score?.score ?? JSON.stringify(lastRepScore.score))}
+              {" "}({lastRepScore.label})
+            </div>
+
             {lastFormFeedback && !lastFormFeedback.overallOK && (
               <ul className="mt-1 list-disc list-inside text-xs text-red-200">
                 {lastFormFeedback.issues.map((msg, i) => (
@@ -1158,5 +1184,4 @@ function computeAnglesSideAware(lms) {
       </div>
     </>
   );
-
 }
