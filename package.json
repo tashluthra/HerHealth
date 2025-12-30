@@ -1,0 +1,11 @@
+{
+  "devDependencies": {
+    "@vitest/ui": "^4.0.16",
+    "jsdom": "^27.4.0",
+    "vitest": "^4.0.16"
+  },
+  "scripts": {
+    "test": "vitest",
+    "test:ui": "vitest --ui"
+  }
+}
