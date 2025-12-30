@@ -187,6 +187,24 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
 
   }
 
+  function assertResample(trace60, keys, label) { //will remove!!! JUST A TEST!!!
+  if (!Array.isArray(trace60)) throw new Error(`${label}: trace60 not an array`);
+  if (trace60.length !== 60) throw new Error(`${label}: expected 60 frames, got ${trace60.length}`);
+
+  for (let i = 0; i < trace60.length; i++) {
+    const f = trace60[i];
+    if (!f || typeof f !== "object") throw new Error(`${label}: frame ${i} is not an object`);
+
+    // ensure keys exist (null allowed, but key must be present)
+    for (const k of keys) {
+      if (!(k in f)) throw new Error(`${label}: frame ${i} missing key "${k}"`);
+      const v = f[k];
+      if (v != null && !Number.isFinite(v)) {
+        throw new Error(`${label}: frame ${i} key "${k}" not finite (${String(v)})`);
+      }
+    }
+  }
+}
 
   // Use LEFT side to match coords panel (11,23,25,27)
   function getJoints(lms) {
@@ -645,7 +663,10 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
     : ["knee", "hip", "torso", "ankle"];
 
   const user60 = resampleTrace(rawUserTrace, keys, 60);
+  assertResample(user60, keys, "user60");
   const ref60  = resampleTrace(rawRefTrace, keys, 60);
+  assertResample(ref60, keys, "ref60");
+
 
   // 4) Score (handle both “number” and “{score, err}” returns)
   const result = scoreRepAgainstRef(user60, ref60, repMode, 60);
