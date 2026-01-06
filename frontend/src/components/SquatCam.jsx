@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-vision";
-import { scoreRepAgainstRef, classifyScore,} from "../utils/squatSimilarity"; 
+import { scoreRepAgainstRef, classifyScore, cosineSimilarityByKey} from "../utils/squatSimilarity"; 
 import { scoreSessionReps } from "../metrics/repQuality";
 import { checkForm } from "../utils/formChecks";
 import { resampleTrace } from "../utils/trajectory";
@@ -667,6 +667,30 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   const ref60  = resampleTrace(rawRefTrace, keys, 60);
   assertResample(ref60, keys, "ref60");
 
+  const featureStats = {};
+  for (const k of keys) {
+    const values = user60
+      .map(f => f[k])
+      .filter(v => typeof v === "number" && Number.isFinite(v));
+
+    featureStats[k] = {
+      min: values.length ? Math.min(...values) : null,
+      max: values.length ? Math.max(...values) : null,
+      range: values.length ? Math.max(...values) - Math.min(...values) : 0,
+    };
+  }
+
+
+  const cos = cosineSimilarityByKey(user60, ref60, keys);
+  setSimDebug(prev => ({
+    ...(prev || {}),
+    mode: repMode,
+    keys, // so the UI can show what you computed
+    cosinePerKey: cos?.perKey || null,
+    cosineCoverage: cos?.coverage || null,
+    featureStats,
+    updatedAt: Date.now(), // proves it refreshed this rep
+  }));
 
   // 4) Score (handle both “number” and “{score, err}” returns)
   const result = scoreRepAgainstRef(user60, ref60, repMode, 60);
@@ -711,7 +735,7 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
       ...s.reps,
       {
         ...repWithValgus,
-        trace: user60,     // ✅ store the 60-frame trace
+        trace: user60,     //store the 60-frame trace
         score: scoreNum,
         label,
         err,
@@ -721,7 +745,6 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
     ],
   }));
 });
-
 
 
   lastFrameInfoRef.current = {
@@ -838,6 +861,35 @@ function selectStableSide(lms) {
   return sideStickyRef.current.side;
 }
 
+function stats(arr) {
+  const vals = arr.filter(v => typeof v === "number" && Number.isFinite(v));
+  if (!vals.length) return null;
+
+  let min = Infinity;
+  let max = -Infinity;
+  let sum = 0;
+
+  for (const v of vals) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+  }
+
+  const mean = sum / vals.length;
+
+  let varSum = 0;
+  for (const v of vals) varSum += (v - mean) ** 2;
+  const std = Math.sqrt(varSum / vals.length);
+
+  return {
+    min,
+    max,
+    range: max - min,
+    std,
+  };
+}
+
+
 function downloadSessions() {
   try {
     const sessions = JSON.parse(localStorage.getItem("herhealth_sessions") || "[]");
@@ -853,19 +905,17 @@ function downloadSessions() {
   }
 }
 
-// --- Angle maths (reuse your angleDeg) ---
+// --- Side-aware angle computation ---
 function computeAnglesSideAware(lms) {
-  const side = selectStableSide(lms);
-  const { s, h, k, a } = getJointsBySide(lms, side);
+  const side = selectStableSide(lms); 
+  const { s, h, k, a } = getJointsBySide(lms, side); // shoulder, hip, knee, ankle
   const toe = lms[TOE[side]];
 
   if (!s || !h || !k || !a || !toe) return null;
 
-  const knee = angleDeg(h, k, a);
-  const hip  = angleDeg(s, h, k);
-
-  // ankle dorsiflexion proxy: angle at ankle (knee-ankle-toe)
-  const ankle = angleDeg(k, a, toe);
+  const knee = angleDeg(h, k, a); // knee flexion: angle at knee (hip-knee-ankle)
+  const hip  = angleDeg(s, h, k); // hip flexion: angle at hip (shoulder-hip-knee)
+  const ankle = angleDeg(k, a, toe); // ankle dorsiflexion: angle at ankle (knee-ankle-toe)
 
   const tx = h.x - s.x, ty = h.y - s.y;
   const torso = Math.round((Math.acos(ty / (Math.hypot(tx, ty) || 1)) * 180) / Math.PI);
@@ -1095,16 +1145,83 @@ function computeAnglesSideAware(lms) {
       </button>
 
     {simDebug && (
-      <div className="fixed bottom-40 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-xs">
-        <div>Similarity debug</div>
+      <div className="fixed top-3 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-[11px] max-w-xs">
+        <div className="font-semibold">SimDebug snapshot</div>
+        <div>mode: {simDebug.mode ?? "–"}</div>
+        <div>has cosinePerKey: {simDebug.cosinePerKey ? "yes" : "no"}</div>
+        <div>keys: {simDebug.keys ? simDebug.keys.join(", ") : "–"}</div>
+        <div>updatedAt: {simDebug.updatedAt ?? "–"}</div>
+      </div>
+    )}
+
+    {simDebug && (
+      <div className="fixed top-40 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-xs max-w-xs">
+        <div className="font-semibold">Similarity debug</div>
+
         <div>Mode: {simDebug.mode}</div>
         <div>User frames: {simDebug.userFrames}</div>
         <div>Ref frames: {simDebug.refFrames}</div>
-        <div>
-          Score: {simDebug.score?.score ?? simDebug.score}
-          <br />
-          Error: {simDebug.score?.err ?? ""}
+
+        <div className="mt-1">
+          Score: {typeof simDebug.score === "number" ? simDebug.score.toFixed(1) : simDebug.score}
         </div>
+
+        {/* ───── Per-feature cosine similarity ───── */}
+        {simDebug.cosinePerKey && (
+          <div className="mt-2">
+            <div className="font-semibold">Cosine similarity</div>
+            {Object.entries(simDebug.cosinePerKey).map(([k, v]) => (
+              <div key={k}>
+                {k}: {typeof v === "number" ? v.toFixed(3) : "–"}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ───── Weights used ───── */}
+        {simDebug.weights && (
+          <div className="mt-2 opacity-90">
+            <div className="font-semibold">Weights</div>
+            {Object.entries(simDebug.weights).map(([k, w]) => (
+              <div key={k}>
+                {k}: {(w * 100).toFixed(0)}%
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ───── Final weighted contributions ───── */}
+        {simDebug.weighted && (
+          <div className="mt-2 opacity-90">
+            <div className="font-semibold">Weighted contribution</div>
+            {Object.entries(simDebug.weighted).map(([k, v]) => (
+              <div key={k}>
+                {k}: {typeof v === "number" ? v.toFixed(3) : "–"}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ───── Coverage sanity check ───── */}
+        {simDebug.cosineCoverage && (
+          <div className="mt-2 opacity-80">
+            <div className="font-semibold">Coverage</div>
+            {Object.entries(simDebug.cosineCoverage).map(([k, c]) => (
+              <div key={k}>
+                {k}: both {c?.both ?? 0} frames
+                {typeof c?.uRange === "number" && typeof c?.rRange === "number" && (
+                  <>
+                    {" "} (uRange {c.uRange.toFixed(3)}, rRange {c.rRange.toFixed(3)}
+                    {c.flatBoth ? ", flat" : ""})
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+
+
       </div>
     )}
 

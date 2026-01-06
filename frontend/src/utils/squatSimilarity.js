@@ -170,3 +170,82 @@ export function classifyScore(score) {
   if (score >= 60) return "amber";
   return "red";
 }
+
+// utils/squatSimilarity.js
+
+function isNum(x) {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+// Dot product + norms for cosine
+function dot(a, b) {
+  let s = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) s += a[i] * b[i];
+  return s;
+}
+
+function norm(a) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * a[i];
+  return Math.sqrt(s);
+}
+
+/**
+ * Cosine similarity between two numeric vectors.
+ * Returns a number in [-1, 1]. We clamp just in case of tiny float overshoots.
+ *
+ * Edge cases:
+ * - if either norm is ~0: returns 0 (no reliable directional similarity)
+ */
+function cosineVec(u, r) { const nu = norm(u); const nr = norm(r); if (nu < 1e-9 || nr < 1e-9) return 0; const c = dot(u, r) / (nu * nr); return Math.max(-1, Math.min(1, c)); }
+
+
+
+/**
+ * Build vectors from traces and compute cosine similarity per key.
+ * user60/ref60 are arrays of frames, e.g. [{knee: 170, ...}, ...] length 60.
+ *
+ * Returns:
+ * {
+ *   perKey: { knee: 0.93, hip: 0.88, ... },
+ *   coverage: { knee: { user: 60, ref: 60 }, ... }  // numeric counts used
+ * }
+ */
+export function cosineSimilarityByKey(userTrace, refTrace, keys) {
+  const perKey = {};
+  const coverage = {};
+
+  for (const k of keys) {
+    // Extract numbers only, but keep alignment by index:
+    // we’ll create vectors where we only keep indices where BOTH are numeric
+    const u = [];
+    const r = [];
+    const n = Math.min(userTrace.length, refTrace.length);
+
+    let uCount = 0;
+    let rCount = 0;
+    let bothCount = 0;
+
+    for (let i = 0; i < n; i++) {
+      const uv = userTrace[i]?.[k];
+      const rv = refTrace[i]?.[k];
+      if (isNum(uv)) uCount += 1;
+      if (isNum(rv)) rCount += 1;
+
+      if (isNum(uv) && isNum(rv)) {
+        u.push(uv);
+        r.push(rv);
+        bothCount += 1;
+      }
+    }
+    coverage[k] = { user: uCount, ref: rCount, both: bothCount };
+    // If we barely have overlapping numeric points, treat similarity as 0
+    if (bothCount < 5) {
+      perKey[k] = 0;
+      continue;
+    }
+    perKey[k] = cosineVec(u, r);
+  }
+  return { perKey, coverage };
+}
