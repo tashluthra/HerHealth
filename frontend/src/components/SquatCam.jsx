@@ -347,105 +347,105 @@ function lowerBodyEligibleFront(lms) {
   }
   //Rep-state + scoring
   function updateRepState(lms, ang, ts, onRepComplete) {
-  let cur = phaseRef.current;
+    let cur = phaseRef.current;
 
-  const atTopKnee = ang.knee >= REP_DETECTION.kneeTop;
-  const atBotKnee = ang.knee <= REP_DETECTION.kneeBottom;
-  const leaveTop  = ang.knee < (REP_DETECTION.kneeTop - 5);
+    const atTopKnee = ang.knee >= REP_DETECTION.kneeTop;
+    const atBotKnee = ang.knee <= REP_DETECTION.kneeBottom;
+    const leaveTop  = ang.knee < (REP_DETECTION.kneeTop - 5);
 
-  // Anti-fake signals
-  const base = topBaseline.current;
-  const sig  = curSig.current || {};
+    // Anti-fake signals
+    const base = topBaseline.current;
+    const sig  = curSig.current || {};
 
-  const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;
-  const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
-  const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
+    const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;
+    const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
+    const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
 
-  const rawFoot = Math.max(ankleLift, heelLift || 0);
-  const alpha = 0.2;
-  footLiftEmaRef.current = alpha * rawFoot + (1 - alpha) * (footLiftEmaRef.current ?? 0);
-  const footLift = footLiftEmaRef.current;
+    const rawFoot = Math.max(ankleLift, heelLift || 0);
+    const alpha = 0.2;
+    footLiftEmaRef.current = alpha * rawFoot + (1 - alpha) * (footLiftEmaRef.current ?? 0);
+    const footLift = footLiftEmaRef.current;
 
-  const bottomOK =
-    atBotKnee &&
-    hipDrop >= SAFETY_LIMITS.minHipDrop &&
-    footLift <= SAFETY_LIMITS.maxFootLift;
+    const bottomOK =
+      atBotKnee &&
+      hipDrop >= SAFETY_LIMITS.minHipDrop &&
+      footLift <= SAFETY_LIMITS.maxFootLift;
 
-  // Update running min/max *only if rep is active*
-  if (currentRepStats.current) {
-    currentRepStats.current.minKnee = Math.min(currentRepStats.current.minKnee, ang.knee);
-    currentRepStats.current.maxTorso = Math.max(currentRepStats.current.maxTorso, ang.torso);
-  }
-
-  // Phase transitions
-  if (cur === "Top" && leaveTop) {
-    cur = "Down";
-
-    // --- start rep (ONLY HERE) ---
-    bottomSince.current = null; // important: reset bottom timer for new rep
-
-    currentRepStats.current = {
-      startTs: ts,
-      minKnee: ang.knee,
-      maxTorso: ang.torso,
-      topTorso: ang.torso, // optional
-    };
-
-    repModeRef.current = viewModeRef.current;   // lock mode for this rep
-    currentRepTraceRef.current = [];            // reset trace for this rep
-
-    
-
-  } else if (cur === "Down" && bottomOK) {
-    cur = "Bottom";
-    bottomSince.current = ts;
-
-  } else if (cur === "Down" && atTopKnee && !bottomSince.current) {
-    // aborted rep: never reached bottom
-    cur = "Top";
-    currentRepStats.current = null;
-    repModeRef.current = null;
-    currentRepTraceRef.current = [];
-    topBaseline.current = { ...curSig.current, torso: ang.torso };
-
-  } else if (cur === "Bottom") {
-    if (bottomSince.current && ts - bottomSince.current >= REP_DETECTION.minBottomMs) {
-      if (!atBotKnee) cur = "Up";
-    }
-
-  } else if (cur === "Up" && atTopKnee) {
-    cur = "Top";
-
-    let repSummary = {
-      tEnd: ts,
-      knee: ang.knee,
-      hip: ang.hip,
-      torso: ang.torso,
-    };
-
+    // Update running min/max *only if rep is active*
     if (currentRepStats.current) {
-      repSummary = {
-        ...repSummary,
-        tStart: currentRepStats.current.startTs ?? null,
-        minKnee: currentRepStats.current.minKnee,
-        maxTorso: currentRepStats.current.maxTorso,
-        durationMs:
-          currentRepStats.current.startTs != null ? ts - currentRepStats.current.startTs : null,
-      };
+      currentRepStats.current.minKnee = Math.min(currentRepStats.current.minKnee, ang.knee);
+      currentRepStats.current.maxTorso = Math.max(currentRepStats.current.maxTorso, ang.torso);
     }
 
-    currentRepStats.current = null;
+    // Phase transitions
+    if (cur === "Top" && leaveTop) {
+      cur = "Down";
 
-    if (typeof onRepComplete === "function") onRepComplete(repSummary);
+      // --- start rep (ONLY HERE) ---
+      bottomSince.current = null; // important: reset bottom timer for new rep
 
-    repModeRef.current = null;
+      currentRepStats.current = {
+        startTs: ts,
+        minKnee: ang.knee,
+        maxTorso: ang.torso,
+        topTorso: ang.torso, // optional
+      };
+
+      repModeRef.current = viewModeRef.current;   // lock mode for this rep
+      currentRepTraceRef.current = [];            // reset trace for this rep
+
+      
+
+    } else if (cur === "Down" && bottomOK) {
+      cur = "Bottom";
+      bottomSince.current = ts;
+
+    } else if (cur === "Down" && atTopKnee && !bottomSince.current) {
+      // aborted rep: never reached bottom
+      cur = "Top";
+      currentRepStats.current = null;
+      repModeRef.current = null;
+      currentRepTraceRef.current = [];
+      topBaseline.current = { ...curSig.current, torso: ang.torso };
+
+    } else if (cur === "Bottom") {
+      if (bottomSince.current && ts - bottomSince.current >= REP_DETECTION.minBottomMs) {
+        if (!atBotKnee) cur = "Up";
+      }
+
+    } else if (cur === "Up" && atTopKnee) {
+      cur = "Top";
+
+      let repSummary = {
+        tEnd: ts,
+        knee: ang.knee,
+        hip: ang.hip,
+        torso: ang.torso,
+      };
+
+      if (currentRepStats.current) {
+        repSummary = {
+          ...repSummary,
+          tStart: currentRepStats.current.startTs ?? null,
+          minKnee: currentRepStats.current.minKnee,
+          maxTorso: currentRepStats.current.maxTorso,
+          durationMs:
+            currentRepStats.current.startTs != null ? ts - currentRepStats.current.startTs : null,
+        };
+      }
+
+      currentRepStats.current = null;
+
+      if (typeof onRepComplete === "function") onRepComplete(repSummary);
+
+      repModeRef.current = null;
+    }
+
+    if (cur !== phaseRef.current) {
+      phaseRef.current = cur;
+      setPhase(cur);
+    }
   }
-
-  if (cur !== phaseRef.current) {
-    phaseRef.current = cur;
-    setPhase(cur);
-  }
-}
 
 function autoDetectMode(lms) {
   const sL = scoreSide(lms, "L");
@@ -666,6 +666,7 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   assertResample(user60, keys, "user60");
   const ref60  = resampleTrace(rawRefTrace, keys, 60);
   assertResample(ref60, keys, "ref60");
+
 
   const featureStats = {};
   for (const k of keys) {
@@ -923,9 +924,62 @@ function computeAnglesSideAware(lms) {
   return { knee, hip, ankle, torso, side };
 }
 
+function TrajectoryPlot({ user, ref, title, yLabel }) {
+  const W = 520, H = 220, pad = 28;
+
+  const all = [...user, ...ref].filter(v => Number.isFinite(v));
+  const min = Math.min(...all);
+  const max = Math.max(...all);
+  const span = (max - min) || 1;
+
+  const x = (i, n) => pad + (i * (W - 2 * pad)) / (n - 1);
+  const y = v => (H - pad) - ((v - min) * (H - 2 * pad)) / span;
+
+  const toPoints = (arr) => arr.map((v, i) => `${x(i, arr.length)},${y(v)}`).join(" ");
+
+  return (
+    <div style={{ background: "#111", padding: 12, borderRadius: 10, width: W }}>
+      <div style={{ color: "#ddd", marginBottom: 8, fontSize: 14 }}>{title}</div>
+
+      <svg width={W} height={H} style={{ background: "#0b0b0b", borderRadius: 8 }}>
+        {/* axes */}
+        <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="#444" />
+        <line x1={pad} y1={pad} x2={pad} y2={H - pad} stroke="#444" />
+
+        {/* y labels (min/max) */}
+        <text x={pad} y={pad - 6} fill="#888" fontSize="10">{max.toFixed(1)}</text>
+        <text x={pad} y={H - 10} fill="#888" fontSize="10">{min.toFixed(1)}</text>
+        <text x={W - pad - 80} y={H - 8} fill="#888" fontSize="10">Normalised index</text>
+        <text x={8} y={12} fill="#888" fontSize="10">{yLabel}</text>
+
+        {/* ref dashed */}
+        <polyline
+          points={toPoints(ref)}
+          fill="none"
+          stroke="#9aa0a6"
+          strokeWidth="2"
+          strokeDasharray="6 4"
+        />
+        {/* user solid */}
+        <polyline
+          points={toPoints(user)}
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth="2"
+        />
+      </svg>
+
+      <div style={{ display: "flex", gap: 14, marginTop: 8, color: "#bbb", fontSize: 12 }}>
+        <span>— User</span>
+        <span style={{ color: "#9aa0a6" }}>- - Expert</span>
+      </div>
+    </div>
+  );
+}
 
 
-  useEffect(() => { 
+
+  useEffect(() => {
     let mounted = true;
 
     //initalise mediapipe pose landmarker from 2 roots (more robust)
