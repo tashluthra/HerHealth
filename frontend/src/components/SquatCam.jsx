@@ -22,6 +22,11 @@ export default function SquatCam() {
   const frontDbgRef = useRef({ eligibleOk: 0, eligibleNo: 0, featOk: 0, featNo: 0 });
   const [frontDbg, setFrontDbg] = useState(frontDbgRef.current);
 
+  const [fsmRepCompleteEvents, setFsmRepCompleteEvents] = useState(0);
+  const [acceptedReps, setAcceptedReps] = useState(0);
+  const [rejectedReps, setRejectedReps] = useState(0);
+
+
   const [crash, setCrash] = useState(null); //ALSO REMOVE LATER!!
     useEffect(() => {
       const onErr = (e) => setCrash(e?.message || String(e));
@@ -73,7 +78,6 @@ export default function SquatCam() {
     summary: null
   });
 
-  const [techniqueFirst, setTechniqueFirst] = useState(true);
   const [lastFormFeedback, setLastFormFeedback] = useState(null);
 
   // smoothing + timing refs
@@ -647,6 +651,7 @@ if (curMode === "front") {
 
   // Rep-state + scoring + form checks
 updateRepState(lms, ang, performance.now(), (repSummary) => {
+  setFsmRepCompleteEvents(x => x + 1);
   const repMode = repModeRef.current ?? viewModeRef.current;
 
   // 1) Copy then clear the raw user trace
@@ -726,8 +731,11 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   setLastFormFeedback(form);
   setLastRepScore({ score: scoreNum, label, err, form });
 
-  if (techniqueFirst && !form.overallOK) return;
-
+  if (!form.overallOK){
+    setRejectedReps(x => x + 1);
+    return;
+  }
+  setAcceptedReps(x => x + 1);
   setRepCount(c => c + 1);
 
   setSession(s => ({
@@ -1191,12 +1199,7 @@ function TrajectoryPlot({ user, ref, title, yLabel }) {
       <div className="fixed top-3 right-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl">
           Mode: {viewMode === "front" ? "Front" : "Side"}
       </div>
-      <button
-        className="fixed bottom-3 right-3 px-3 py-1 rounded-xl bg-black/60 text-white"
-        onClick={() => setViewMode(m => (m === "front" ? "side" : "front"))}
-      >
-        Mode Button: {viewMode === "front" ? "Front" : "Side"}
-      </button>
+
 
     {simDebug && (
       <div className="fixed top-3 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-[11px] max-w-xs">
@@ -1332,18 +1335,12 @@ function TrajectoryPlot({ user, ref, title, yLabel }) {
           <button onClick={endSessionAndSave} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">End &amp; Save</button>
           <button onClick={downloadSessions} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Download Data</button>
 
-          <button
-            onClick={() => setTechniqueFirst(v => !v)}
-            className={`px-3 py-1 rounded-lg border ${
-              techniqueFirst ? "bg-emerald-600/70" : "bg-white/10"
-            }`}
-          >
-            {techniqueFirst ? "Technique first" : "Count all reps"}
-          </button>
-
           <span>FPS: {fps}</span>
           <span>Reps: {repCount}</span>
           <span>Phase: {phase}</span>
+          <span>FSM Rep Complete Events: {fsmRepCompleteEvents}</span>
+          <span>Accepted Reps: {acceptedReps}</span>
+          <span>Rejected Reps: {rejectedReps}</span>
         </div>
 
         {lastRepScore && (
