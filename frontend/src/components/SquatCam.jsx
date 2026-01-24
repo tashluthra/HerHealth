@@ -3,7 +3,7 @@ import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-
 import { scoreRepAgainstRef, classifyScore, cosineSimilarityByKey} from "../utils/squatSimilarity"; 
 import { scoreSessionReps } from "../metrics/repQuality";
 import { checkForm } from "../utils/formChecks";
-import { resampleTrace } from "../utils/trajectory";
+import { buildRepData } from "../logic/buildRepData";
 
 
 export default function SquatCam() {
@@ -662,15 +662,12 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   const templates = refTemplatesRef.current;
   const rawRefTrace = buildRefTraceForMode(templates, repMode);
 
-  // 3) Decide keys and resample BOTH to 60
-  const keys = (repMode === "front")
-    ? ["valgus", "symmetry", "pelvic", "depth"]
-    : ["knee", "hip", "torso", "ankle"];
+  const rep = buildRepData(rawUserTrace, rawRefTrace, repMode, 60);
+  const { user: user60, ref: ref60, keys } = rep;
 
-  const user60 = resampleTrace(rawUserTrace, keys, 60);
   assertResample(user60, keys, "user60");
-  const ref60  = resampleTrace(rawRefTrace, keys, 60);
   assertResample(ref60, keys, "ref60");
+
 
 
   const featureStats = {};
