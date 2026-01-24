@@ -26,6 +26,9 @@ export default function SquatCam() {
   const [acceptedReps, setAcceptedReps] = useState(0);
   const [rejectedReps, setRejectedReps] = useState(0);
 
+  const frontBaselineRef = useRef({ symmetry0: null });
+  const b = frontBaselineRef.current;
+  const [frontBaseReady, setFrontBaseReady] = useState(false);
 
   const [crash, setCrash] = useState(null); //ALSO REMOVE LATER!!
     useEffect(() => {
@@ -137,7 +140,6 @@ const sideStickyRef = useRef({ side: "L", wins: 0 });
 // live per-frame signals + baseline captured at Top
 const curSig = useRef({ hipY: null, ankleY: null, heelY: null });
 const topBaseline = useRef(null);
-const frontBaselineRef = useRef({ sym0: null }); //front view symmetry baseline
 const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
 
   const DEBUG = true;
@@ -161,7 +163,7 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
   return visOK && inFrameOK;
   }
   
-  function computeFrontFeatures(lms) {
+  function computeFrontFeatures(lms) { 
     const lh = lms[23], rh = lms[24];
     const lk = lms[25], rk = lms[26];
     const la = lms[27], ra = lms[28];
@@ -173,22 +175,19 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
     const valgus = (leftValgus + rightValgus) / 2;
 
     const hipWidth = Math.abs(lh.x - rh.x) + 1e-6;
-    const rawSym = (lk.x - rk.x) / hipWidth;
+    const symmetry = (lk.x - rk.x) / hipWidth;
 
-    const pelvic = (lh.y - rh.y);
-    const depth = (lh.y + rh.y) / 2;
+    const pelvic = (lh.y - rh.y) / hipWidth;
+    const depth  = ((lh.y + rh.y) / 2) / hipWidth;
 
-    return {
-      // raw values (used for baselines)
-      valgusRaw: valgus,
-      symRaw: rawSym,
-      // values used during the rep
-      valgus,
-      symmetry: rawSym,
-      pelvic,
-      depth,
-    };
+    return { valgus, symmetry, pelvic, depth };
+  }
 
+  function countFinite(trace60, key) { //will remove
+    if (!Array.isArray(trace60)) return 0;
+    let n = 0;
+    for (const f of trace60) if (Number.isFinite(f?.[key])) n++;
+    return n;
   }
 
   function assertResample(trace60, keys, label) { //will remove!!! JUST A TEST!!!
@@ -475,7 +474,6 @@ function autoDetectMode(lms) {
 
 
 function handlePoseResults(res) {
-  if (DEBUG) console.count("[HerHealth] handlePoseResults calls");
   tickFps();
 
   const lms = res?.landmarks?.[0];
@@ -510,6 +508,7 @@ function handlePoseResults(res) {
   if (!angRaw) return;
 
   const ang = smoothAngles(angRaw); // { knee, hip, torso }
+  if (ang?.knee == null || ang?.hip == null || ang?.torso == null) return;
   setSideUsed(angRaw.side ?? (curMode === "front" ? "F" : sideStickyRef.current.side));
 
   // ② Signals/baseline: still track ONE side’s Y positions
@@ -518,10 +517,9 @@ function handlePoseResults(res) {
   curSig.current = sig;
 
   // --- Ensure/refresh Top baseline ---
-  const atTopKneeNow = ang.knee >= (REP_DETECTION .kneeTop - 5);
+  const atTopKneeNow = ang.knee >= (REP_DETECTION.kneeTop - 5);
   if (!topBaseline.current && atTopKneeNow) {
     topBaseline.current = { ...curSig.current, torso: ang.torso };
-    if (DEBUG) console.log("[HerHealth] baseline initialised (knee:", ang.knee.toFixed(1), ")");
   }
   if (phaseRef.current === "Top" && atTopKneeNow) {
     topBaseline.current = { ...curSig.current, torso: ang.torso };
@@ -546,16 +544,31 @@ function handlePoseResults(res) {
         footLift < 0.02;
 
       if (
-        stable &&
-        typeof f0?.symRaw === "number" &&
-        typeof f0?.valgusRaw === "number"
-      ) {
-        // only set if not already set (or if you want to keep refreshing it at Top, remove the "== null" checks)
-        if (frontBaselineRef.current.sym0 == null) frontBaselineRef.current.sym0 = f0.symRaw;
-        if (frontBaselineRef.current.valgus0 == null) frontBaselineRef.current.valgus0 = f0.valgusRaw;
-      }
+      stable &&
+      typeof f0?.symmetry === "number" &&
+      typeof f0?.valgus === "number" &&
+      typeof f0?.pelvic === "number" &&
+      typeof f0?.depth === "number"
+    ) {
+      const b = frontBaselineRef.current;
+
+      if (b.symmetry0 == null) b.symmetry0 = f0.symmetry;
+      if (b.valgus0   == null) b.valgus0   = f0.valgus;
+      if (b.pelvic0   == null) b.pelvic0   = f0.pelvic;
+      if (b.depth0    == null) b.depth0    = f0.depth;
+    } 
     }
-  }
+  } 
+  if (curMode === "front") {
+  const b = frontBaselineRef.current;
+  const ready =
+    b &&
+    ["valgus0", "symmetry0", "pelvic0", "depth0"].every(k => typeof b[k] === "number");
+  setFrontBaseReady(ready);
+} else {
+  setFrontBaseReady(false);
+}
+
 
 
   //Coords panel uses the side we track for signals
@@ -594,24 +607,21 @@ if (curMode === "front") {
     ? true
     : lowerBodyEligible(lms, angRaw.side);
 
-  if (currentRepStats.current) {
+  if (currentRepStats.current && ok) {
    if (curMode === "front") {
     const f = computeFrontFeatures(lms);
     if (!f) return; // <-- NEW: don't push if we couldn't compute features
 
-    // --- NEW: initialise baselines once (at the first valid "top" frame ideally) ---
-    if (frontBaselineRef.current.sym0 == null && typeof f.symmetry === "number") {
-      frontBaselineRef.current.sym0 = f.symmetry;
-    }
-    if (frontBaselineRef.current.valgus0 == null && typeof f.valgus === "number") {
-      frontBaselineRef.current.valgus0 = f.valgus;
-    }
-    if (frontBaselineRef.current.pelvic0 == null && typeof f.pelvic === "number") {
-      frontBaselineRef.current.pelvic0 = f.pelvic;
-    }
-
     const b = frontBaselineRef.current ?? {};
-    const sym0 = typeof b.sym0 === "number" ? b.sym0 : null;
+    const frontReady =
+      typeof b?.symmetry0 === "number" &&
+      typeof b?.valgus0 === "number" &&
+      typeof b?.pelvic0 === "number" &&
+      typeof b?.depth0 === "number";
+
+    if (!frontReady) return; // don't push until baseline is captured
+
+    const symmetry0 = typeof b.symmetry0 === "number" ? b.symmetry0 : null;
     const valgus0 = typeof b.valgus0 === "number" ? b.valgus0 : null;
     const pelvic0 = typeof b.pelvic0 === "number" ? b.pelvic0 : null;
 
@@ -622,20 +632,31 @@ if (curMode === "front") {
 
     // --- CHANGED: use deltas (centred) for front metrics ---
     const valgusUsed =
-      (typeof valgus === "number" && typeof valgus0 === "number") ? (valgus - valgus0) : null;
+    (typeof f.valgus === "number" && typeof b.valgus0 === "number")
+      ? (f.valgus - b.valgus0)
+      : null;
 
-    const symmetryUsed =
-      (typeof symmetry === "number" && typeof sym0 === "number") ? (symmetry - sym0) : null;
+  const symmetryUsed =
+    (typeof f.symmetry === "number" && typeof b.symmetry0 === "number")
+      ? (f.symmetry - b.symmetry0)
+      : null;
 
-    const pelvicUsed =
-      (typeof pelvic === "number" && typeof pelvic0 === "number") ? (pelvic - pelvic0) : null;
+  const pelvicUsed =
+    (typeof f.pelvic === "number" && typeof b.pelvic0 === "number")
+      ? (f.pelvic - b.pelvic0)
+      : null;
 
-    currentRepTraceRef.current.push({
-      valgus: valgusUsed,
-      symmetry: symmetryUsed,
-      pelvic: pelvicUsed,
-      depth, // keep raw
-    });
+  const depthUsed =
+    (typeof f.depth === "number" && typeof b.depth0 === "number")
+      ? (f.depth - b.depth0)
+      : null;
+
+  currentRepTraceRef.current.push({
+    valgus: valgusUsed,
+    symmetry: symmetryUsed,
+    pelvic: pelvicUsed,
+    depth: depthUsed,
+  });
   }else {
       // side view trace (already correct)
       currentRepTraceRef.current.push({
@@ -661,9 +682,12 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   // 2) Build raw reference trace
   const templates = refTemplatesRef.current;
   const rawRefTrace = buildRefTraceForMode(templates, repMode);
-
   const rep = buildRepData(rawUserTrace, rawRefTrace, repMode, 60);
   const { user: user60, ref: ref60, keys } = rep;
+
+  const finiteCounts = Object.fromEntries(
+    keys.map(k => [k, { user: countFinite(user60, k), ref: countFinite(ref60, k) }])
+  );
 
   assertResample(user60, keys, "user60");
   assertResample(ref60, keys, "ref60");
@@ -689,6 +713,7 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
     ...(prev || {}),
     mode: repMode,
     keys, // so the UI can show what you computed
+    finiteCounts,
     cosinePerKey: cos?.perKey || null,
     cosineCoverage: cos?.coverage || null,
     featureStats,
@@ -774,7 +799,12 @@ function startSession() {
   phaseRef.current = "Top";
   bottomSince.current = null;
   topBaseline.current = null;
-  frontBaselineRef.current = { sym0: null };
+  frontBaselineRef.current = {
+    symmetry0: null,
+    valgus0: null,
+    pelvic0: null,
+    depth0: null,
+  };
   currentRepStats.current = null;
   repModeRef.current = null;
   setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
@@ -1338,6 +1368,12 @@ function TrajectoryPlot({ user, ref, title, yLabel }) {
           <span>FSM Rep Complete Events: {fsmRepCompleteEvents}</span>
           <span>Accepted Reps: {acceptedReps}</span>
           <span>Rejected Reps: {rejectedReps}</span>
+          <span>
+            Front baseline:{" "}
+            <strong className={frontBaseReady ? "text-green-400" : "text-red-400"}>
+              {frontBaseReady ? "READY" : "NOT READY"}
+            </strong>
+          </span>
         </div>
 
         {lastRepScore && (
