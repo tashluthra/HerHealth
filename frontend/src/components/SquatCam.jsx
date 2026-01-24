@@ -163,6 +163,22 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
   return visOK && inFrameOK;
   }
   
+  /**
+   * FRONT VIEW FEATURES (mode="front") — definition contract for scoring/reference alignment
+   *
+   * Keys (see getTraceKeys):
+   * - valgus: avg((lk.x-la.x)/stanceWidth, (rk.x-ra.x)/stanceWidth), stanceWidth=|la.x-ra.x|+eps
+   * - symmetry: (lk.x-rk.x)/hipWidth, hipWidth=|lh.x-rh.x|+eps
+   * - pelvic: (lh.y - rh.y)
+   * - depth: (lh.y + rh.y)/2
+   *
+   * Baseline/centring:
+   * - Capture symmetry0/valgus0/pelvic0/depth0 at stable Top (front mode only)
+   * - During rep, use deltas: featureUsed = featureRaw - feature0 (depth: raw or centred — keep consistent)
+   *
+   * Units:
+   * - valgus/symmetry dimensionless; pelvic/depth are normalised image coordinates.
+   */
   function computeFrontFeatures(lms) { 
     const lh = lms[23], rh = lms[24];
     const lk = lms[25], rk = lms[26];
