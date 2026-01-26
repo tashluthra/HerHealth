@@ -232,6 +232,9 @@ def process_video_front(path: Path):
 
     #baseline symmetry at the start of the rep (first valid frame)
     baseline_sym = None
+    baseline_pelvic = None
+    baseline_depth = None
+
 
 
     with Pose(static_image_mode=False,
@@ -285,11 +288,23 @@ def process_video_front(path: Path):
             symmetry.append(raw_sym - baseline_sym)
 
 
-            #pelvic drop: hip y difference
-            pelvic_drop.append((lh[1] - rh[1]) / h)
+            # --- pelvic drop (baseline-relative, hip-width normalised) ---
+            hip_width = abs(lh[0] - rh[0]) + 1e-6
+            raw_pelvic = (lh[1] - rh[1]) / hip_width
 
-            #depth proxy: hip vertical motion (normalised)
-            depth_proxy.append(hip_centre[1] / h)
+            if baseline_pelvic is None:
+                baseline_pelvic = raw_pelvic
+
+            pelvic_drop.append(raw_pelvic - baseline_pelvic)
+
+
+            # --- depth proxy (baseline-relative, hip-width normalised) ---
+            raw_depth = hip_centre[1] / hip_width
+
+            if baseline_depth is None:
+                baseline_depth = raw_depth
+
+            depth_proxy.append(raw_depth - baseline_depth)
 
     cap.release()
 
