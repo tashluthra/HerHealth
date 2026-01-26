@@ -1,6 +1,6 @@
 import json
-import cv2
-import numpy as np
+import cv2 
+import numpy as np 
 import mediapipe as mp
 from mediapipe.python.solutions.pose import Pose, PoseLandmark
 from pathlib import Path
@@ -46,13 +46,21 @@ def torso_angle(hip, shoulder):
     cosang = np.clip(cosang, -1.0, 1.0)
     return np.degrees(np.arccos(cosang))
 
-def resample(traj, n= n_samples):
+def resample(traj, n=n_samples):
     """
     Resample trajectory to fixed length n using linear interpolation.
+    Safe for very short trajectories.
     """
+    traj = np.array(traj, dtype=float)
+    if len(traj) == 0:
+        return np.zeros(n)
+    if len(traj) == 1:
+        return np.full(n, traj[0])
     x = np.linspace(0, 1, len(traj))
     xi = np.linspace(0, 1, n)
     return np.interp(xi, x, traj)
+
+
 
 def detect_rep_from_hip_y(hip_y):
     """ 
@@ -90,6 +98,9 @@ def process_video_side(path: Path):
     """
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = 0
+    valid_frames = 0
+
 
     #time series data
     hip_y = []
@@ -105,6 +116,8 @@ def process_video_side(path: Path):
             ok, frame = cap.read()
             if not ok:
                 break
+            
+            total_frames += 1
 
             h, w, _ = frame.shape
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -112,6 +125,7 @@ def process_video_side(path: Path):
             pose_landmarks = getattr(res, "pose_landmarks", None)
             if pose_landmarks is None:
                 continue
+            valid_frames += 1
             lm = pose_landmarks.landmark
 
             def xy(i):
@@ -140,12 +154,35 @@ def process_video_side(path: Path):
 
     cap.release()
 
+    # --- quality gating ---
+    if total_frames == 0:
+        print(f"[side] {path.name}: no frames read")
+        return None
+
+    if valid_frames < 60:
+        print(f"[side] {path.name}: too few valid frames ({valid_frames}/{total_frames})")
+        return None
+
+    detection_rate = valid_frames / total_frames
+    if detection_rate < 0.6:
+        print(f"[side] {path.name}: low detection rate ({valid_frames}/{total_frames})")
+        return None
+
+
     #smoothing
     for arr in (angles_hip, angles_knee, angles_ankle, angles_torso, hip_y):
         arr[:] = moving_average(arr)
 
     #rep detection
     s, b, e = detect_rep_from_hip_y(hip_y)
+    if (e - s) < 20:
+        print(f"[side] {path.name}: rep segment too short ({e - s} frames)")
+        return None
+    if b <= s + 3 or b >= e - 3:
+        print(f"[side] {path.name}: bottom too close to edge")
+        return None
+
+
 
     #cut and resample
     def cut_and_resample(arr):
@@ -154,6 +191,7 @@ def process_video_side(path: Path):
     template = {
         "file": path.name,
         "fps": fps,
+        "view": "side",
         "rep_indices": {"start": int(s), "bottom": int(b), "end": int(e)},
         "trajectories": {
             "hip": cut_and_resample(angles_hip),
@@ -161,6 +199,12 @@ def process_video_side(path: Path):
             "ankle": cut_and_resample(angles_ankle),
             "torso": cut_and_resample(angles_torso),
         },
+        "quality": {
+            "total_frames": int(total_frames),
+            "valid_frames": int(valid_frames),
+            "detection_rate": float(valid_frames / max(1, total_frames)),
+        },
+
     }
     return template
 
@@ -175,14 +219,11 @@ def process_video_front(path: Path):
     """
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = 0
+    valid_frames = 0
+
 
     #time series data for frontal plane features
-    hip_y_centre = []
-    valgus = []
-    symmetry = []
-    pelvic_drop = []
-    depth_proxy = []
-
     hip_y_centre = []
     valgus = []
     symmetry = []
@@ -200,6 +241,8 @@ def process_video_front(path: Path):
             ok, frame = cap.read()
             if not ok:
                 break
+            
+            total_frames += 1
 
             h, w, _ = frame.shape
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -207,6 +250,7 @@ def process_video_front(path: Path):
             pose_landmarks = getattr(res, "pose_landmarks", None)
             if pose_landmarks is None:
                 continue
+            valid_frames += 1
             lm = pose_landmarks.landmark
 
             def xy(i):
@@ -249,12 +293,35 @@ def process_video_front(path: Path):
 
     cap.release()
 
+    # --- quality gating ---
+    if total_frames == 0:
+        print(f"[front] {path.name}: no frames read")
+        return None
+
+    if valid_frames < 60:
+        print(f"[front] {path.name}: too few valid frames ({valid_frames}/{total_frames})")
+        return None
+
+    detection_rate = valid_frames / total_frames
+    if detection_rate < 0.6:
+        print(f"[front] {path.name}: low detection rate ({valid_frames}/{total_frames})")
+        return None
+
+
     #smooth signals
     for arr in (hip_y_centre, valgus, symmetry, pelvic_drop, depth_proxy):
         arr[:] = moving_average(arr)
 
     #rep detection
     s, b, e = detect_rep_from_hip_y(hip_y_centre)
+    if (e - s) < 20:
+        print(f"[front] {path.name}: rep segment too short ({e - s} frames)")
+        return None
+    if b <= s + 3 or b >= e - 3:
+        print(f"[front] {path.name}: bottom too close to edge")
+        return None
+
+
 
     #cut and resample
     def cut_and_resample(arr):
@@ -263,6 +330,7 @@ def process_video_front(path: Path):
     template = {
         "file": path.name,
         "fps": fps,
+        "view": "front", 
         "rep_indices": {"start": int(s), "bottom": int(b), "end": int(e)},
         "trajectories": {
             "valgus": cut_and_resample(valgus),
@@ -270,21 +338,140 @@ def process_video_front(path: Path):
             "pelvic": cut_and_resample(pelvic_drop),
             "depth": cut_and_resample(depth_proxy),
         },
+        "quality": {
+            "total_frames": int(total_frames),
+            "valid_frames": int(valid_frames),
+            "detection_rate": float(valid_frames / max(1, total_frames)),
+        },
+
     }
     return template
 
+def process_directory(view_dir: Path, view: str):
+    """
+    Process all mp4 clips in a directory and return list of per-clip templates.
+    view must be "front" or "side".
+    """
+    templates = []
+    for path in sorted(view_dir.glob("*.mp4")):
+        try:
+            if view == "front":
+                t = process_video_front(path)
+            else:
+                t = process_video_side(path)
+
+            # skip failed / low-quality clips (process_* will return None if we add gating)
+            if t is not None:
+                templates.append(t)
+
+        except Exception as e:
+            print(f"Skipping {path.name} due to error: {e}")
+    return templates
+
+def distance_to_centre(template, centre):
+    """
+    Mean absolute error between template trajectories and centre trajectories
+    across all keys and timesteps.
+    """
+    keys = centre.keys()
+    total = 0.0
+    count = 0
+    for k in keys:
+        a = np.array(template["trajectories"][k], dtype=float)
+        b = np.array(centre[k], dtype=float)
+        m = min(len(a), len(b))
+        total += np.mean(np.abs(a[:m] - b[:m]))
+        count += 1
+    return total / max(1, count)
+
+def aggregate_templates(templates, drop_worst_pct=0.2, use_median=True):
+    """
+    Create robust aggregate template + spread band from per-clip templates.
+    Returns dict with centre/spread + kept/dropped lists.
+    """
+    if len(templates) == 0:
+        return None
+    
+    if len(templates) < 5:
+        drop_worst_pct = 0.0
+
+    keys = list(templates[0]["trajectories"].keys())
+    T = len(templates[0]["trajectories"][keys[0]])
+
+    # stack: (num_clips, T) per key
+    stack = {k: np.array([t["trajectories"][k] for t in templates], dtype=float) for k in keys}
+
+    # preliminary centre
+    if use_median:
+        centre0 = {k: np.median(stack[k], axis=0) for k in keys}
+    else:
+        centre0 = {k: np.mean(stack[k], axis=0) for k in keys}
+
+    # distances + drop worst %
+    dists = [(t["file"], distance_to_centre(t, centre0)) for t in templates]
+    dists_sorted = sorted(dists, key=lambda x: x[1])
+
+    keep_n = max(1, int(round(len(templates) * (1 - drop_worst_pct))))
+    kept_files = set([f for f, _ in dists_sorted[:keep_n]])
+    dropped_files = [f for f, _ in dists_sorted[keep_n:]]
+
+    kept = [t for t in templates if t["file"] in kept_files]
+
+    # recompute final centre/spread on kept
+    stack2 = {k: np.array([t["trajectories"][k] for t in kept], dtype=float) for k in keys}
+
+    if use_median:
+        centre = {k: np.median(stack2[k], axis=0) for k in keys}
+        spread = {k: np.median(np.abs(stack2[k] - centre[k]), axis=0) for k in keys}  # MAD per timestep
+        spread_name = "mad"
+    else:
+        centre = {k: np.mean(stack2[k], axis=0) for k in keys}
+        spread = {k: np.std(stack2[k], axis=0) for k in keys}
+        spread_name = "std"
+
+    return {
+        "keys": keys,
+        "n_samples": int(T),
+        "centre": {k: centre[k].tolist() for k in keys},
+        "spread": {k: spread[k].tolist() for k in keys},
+        "spread_type": spread_name,
+        "kept": sorted(list(kept_files)),
+        "dropped": dropped_files,
+        "distances": [{"file": f, "distance": float(d)} for f, d in dists_sorted],
+    }
+
+
 #Run both processors and save template json
 def main():
-    front_path = ref_directory / "front_view.mp4"
-    side_path = ref_directory / "side_view.mp4"
+    front_dir = ref_directory / "front"
+    side_dir = ref_directory / "side"
 
-    front_template = process_video_front(front_path)
-    side_template = process_video_side(side_path)
+    front_templates = process_directory(front_dir, "front")
+    side_templates = process_directory(side_dir, "side")
 
-    #save to json
-    data = {"front": front_template, "side": side_template}
+    if len(front_templates) == 0:
+        raise RuntimeError("No valid front-view templates produced.")
+    if len(side_templates) == 0:
+        raise RuntimeError("No valid side-view templates produced.")
+
+    front_agg = aggregate_templates(front_templates, drop_worst_pct=0.2, use_median=True)
+    side_agg = aggregate_templates(side_templates, drop_worst_pct=0.2, use_median=True)
+
+    data = {
+        "created_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+        "front": {
+            "clips": front_templates,
+            "aggregate": front_agg,
+        },
+        "side": {
+            "clips": side_templates,
+            "aggregate": side_agg,
+        },
+    }
+
     output_json.write_text(json.dumps(data, indent=2))
-    print(f"Saved templates to {output_json }")
+    print(f"Saved templates to {output_json}")
+
 
 if __name__ == "__main__":
     main()
