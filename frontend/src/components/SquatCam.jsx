@@ -22,6 +22,9 @@ export default function SquatCam() {
   const frontDbgRef = useRef({ eligibleOk: 0, eligibleNo: 0, featOk: 0, featNo: 0 });
   const [frontDbg, setFrontDbg] = useState(frontDbgRef.current);
 
+  const [refDebug, setRefDebug] = useState(null);
+
+
   const [fsmRepCompleteEvents, setFsmRepCompleteEvents] = useState(0);
   const [acceptedReps, setAcceptedReps] = useState(0);
   const [rejectedReps, setRejectedReps] = useState(0);
@@ -114,6 +117,8 @@ useEffect(() => {
       refTemplatesRef.current = refTemplates;
     }, [refTemplates]);
 
+
+    const refModes = refTemplates ? Object.keys(refTemplates).join(", ") : "–";
 
 const REP_DETECTION = {       // temporary hold values (will change with algorithm from video)
   kneeTop: 168,        // can replace with professional values
@@ -259,15 +264,28 @@ function visibilityScore(lms, idxs) {
 function buildRefTraceForMode(refTemplates, mode) {
   if (!refTemplates) return [];
 
-  const ref = refTemplates[mode];
-  const T = ref?.trajectories;
+  const ref = refTemplates?.[mode];
+  if (!ref) return [];
+
+  // NEW: support both formats
+  const T =
+    ref?.trajectories ??
+    ref?.aggregate?.centre ??
+    ref?.aggregate?.center;
+
   if (!T) return [];
 
-  const keys = mode === "side"
-    ? ["knee", "hip", "torso", "ankle"]
-    : ["valgus", "symmetry", "pelvic", "depth"];
+  // NEW: prefer the keys listed in the JSON (less brittle)
+  const keys =
+    ref?.aggregate?.keys ??
+    (mode === "side"
+      ? ["knee", "hip", "torso", "ankle"]
+      : ["valgus", "symmetry", "pelvic", "depth"]);
 
-  const n = Math.max(...keys.map(k => (T[k]?.length ?? 0)));
+  const n =
+    ref?.aggregate?.n_samples ??
+    Math.max(...keys.map(k => (Array.isArray(T[k]) ? T[k].length : 0)));
+
   if (!n) return [];
 
   const frames = [];
@@ -698,6 +716,11 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   // 2) Build raw reference trace
   const templates = refTemplatesRef.current;
   const rawRefTrace = buildRefTraceForMode(templates, repMode);
+  setRefDebug({
+    ok: Array.isArray(rawRefTrace) && rawRefTrace.length > 0,
+    n: rawRefTrace?.length ?? 0,
+    mode: repMode,
+  });
   const rep = buildRepData(rawUserTrace, rawRefTrace, repMode, 60);
   const { user: user60, ref: ref60, keys } = rep;
 
@@ -974,61 +997,6 @@ function computeAnglesSideAware(lms) {
 
   return { knee, hip, ankle, torso, side };
 }
-
-function TrajectoryPlot({ user, ref, title, yLabel }) {
-  const W = 520, H = 220, pad = 28;
-
-  const all = [...user, ...ref].filter(v => Number.isFinite(v));
-  const min = Math.min(...all);
-  const max = Math.max(...all);
-  const span = (max - min) || 1;
-
-  const x = (i, n) => pad + (i * (W - 2 * pad)) / (n - 1);
-  const y = v => (H - pad) - ((v - min) * (H - 2 * pad)) / span;
-
-  const toPoints = (arr) => arr.map((v, i) => `${x(i, arr.length)},${y(v)}`).join(" ");
-
-  return (
-    <div style={{ background: "#111", padding: 12, borderRadius: 10, width: W }}>
-      <div style={{ color: "#ddd", marginBottom: 8, fontSize: 14 }}>{title}</div>
-
-      <svg width={W} height={H} style={{ background: "#0b0b0b", borderRadius: 8 }}>
-        {/* axes */}
-        <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="#444" />
-        <line x1={pad} y1={pad} x2={pad} y2={H - pad} stroke="#444" />
-
-        {/* y labels (min/max) */}
-        <text x={pad} y={pad - 6} fill="#888" fontSize="10">{max.toFixed(1)}</text>
-        <text x={pad} y={H - 10} fill="#888" fontSize="10">{min.toFixed(1)}</text>
-        <text x={W - pad - 80} y={H - 8} fill="#888" fontSize="10">Normalised index</text>
-        <text x={8} y={12} fill="#888" fontSize="10">{yLabel}</text>
-
-        {/* ref dashed */}
-        <polyline
-          points={toPoints(ref)}
-          fill="none"
-          stroke="#9aa0a6"
-          strokeWidth="2"
-          strokeDasharray="6 4"
-        />
-        {/* user solid */}
-        <polyline
-          points={toPoints(user)}
-          fill="none"
-          stroke="#ffffff"
-          strokeWidth="2"
-        />
-      </svg>
-
-      <div style={{ display: "flex", gap: 14, marginTop: 8, color: "#bbb", fontSize: 12 }}>
-        <span>— User</span>
-        <span style={{ color: "#9aa0a6" }}>- - Expert</span>
-      </div>
-    </div>
-  );
-}
-
-
 
   useEffect(() => {
     let mounted = true;
@@ -1390,6 +1358,9 @@ function TrajectoryPlot({ user, ref, title, yLabel }) {
               {frontBaseReady ? "READY" : "NOT READY"}
             </strong>
           </span>
+          <span>Ref OK: {refDebug?.ok ? "YES" : "NO"}</span>
+          <span>Ref len: {refDebug?.n ?? "–"}</span>
+          <span>Ref modes: {refModes}</span>
         </div>
 
         {lastRepScore && (
