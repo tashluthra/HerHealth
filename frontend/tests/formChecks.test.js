@@ -160,6 +160,31 @@ describe("checkForm", () => {
       expect(result.depthOK).toBe(true);
     });
   });
+
+  describe("romCalibration per view (front/side)", () => {
+    it("uses front ROM when viewMode is front and romCalibration.front exists", () => {
+      const rep = { minKnee: 100, viewMode: "front" };
+      const rom = { front: { minKnee: 95 }, side: { minKnee: 90 } };
+      const result = checkForm(rep, { romCalibration: rom, depthPctThreshold: 80 });
+      expect(result.depthOK).toBe(true);
+      expect(result.depthPct).toBeGreaterThanOrEqual(80);
+    });
+
+    it("uses side ROM when viewMode is side and romCalibration.side exists", () => {
+      const rep = { minKnee: 100, viewMode: "side" };
+      const rom = { front: { minKnee: 95 }, side: { minKnee: 90 } };
+      const result = checkForm(rep, { romCalibration: rom, depthPctThreshold: 80 });
+      expect(result.depthOK).toBe(true);
+      expect(result.depthPct).toBeGreaterThanOrEqual(80);
+    });
+
+    it("falls back to absolute depth when ROM missing for view", () => {
+      const rep = { minKnee: 115, viewMode: "side" };
+      const rom = { front: { minKnee: 95 } }; // no side
+      const result = checkForm(rep, { romCalibration: rom });
+      expect(result.depthOK).toBe(true);
+    });
+  });
 });
 
 describe("FORM_THRESHOLDS", () => {

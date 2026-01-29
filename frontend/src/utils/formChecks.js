@@ -26,14 +26,32 @@ export function checkForm(rep, opts = {}) {
     const isSide  = rep.viewMode === "side";
 
     const issues = [];
+    let depthPct = null;
 
-    // 1) Depth
-    const depthOK =
-        typeof rep.minKnee === "number" &&
-        rep.minKnee <= cfg.minDepthKnee;
+    // 1) Depth – contextualized when romCalibration present for this view, else absolute
+    const kneeTop = cfg.kneeTop ?? 168;
+    const depthPctThreshold = cfg.depthPctThreshold ?? 80;
+    const rom = cfg.romCalibration;
+    const romForView = rom && rep.viewMode ? rom[rep.viewMode] : null;
+    const romMinKnee = romForView && typeof romForView.minKnee === "number" ? romForView.minKnee : null;
 
-    if (!depthOK) {
-        issues.push("Go a bit deeper- aim to bend your knees more at the bottom.");
+    let depthOK;
+    if (romMinKnee != null && typeof rep.minKnee === "number") {
+        const denom = kneeTop - romMinKnee;
+        depthPct = denom > 0
+            ? Math.max(0, Math.min(100, ((kneeTop - rep.minKnee) / denom) * 100))
+            : 100;
+        depthOK = depthPct >= depthPctThreshold;
+        if (!depthOK) {
+            issues.push(`You hit ${Math.round(depthPct)}% of your comfortable depth – aim for at least ${depthPctThreshold}%.`);
+        }
+    } else {
+        depthOK =
+            typeof rep.minKnee === "number" &&
+            rep.minKnee <= cfg.minDepthKnee;
+        if (!depthOK) {
+            issues.push("Go a bit deeper- aim to bend your knees more at the bottom.");
+        }
     }
 
     // 2) Forward lean – side view only
@@ -112,5 +130,6 @@ export function checkForm(rep, opts = {}) {
         valgusOK,
         overallOK,
         issues,
+        depthPct,
     };
 }

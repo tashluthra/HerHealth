@@ -82,8 +82,12 @@ export default function SquatCam() {
     endedAt: null,
     frames: [],       // optional diagnostics (kept small)
     reps: [],         // per-rep metrics
-    summary: null
+    summary: null,
+    romCalibration: null,   // { front?: { minKnee }, side?: { minKnee } } – personal ROM per view (not persisted)
+    sessionPhase: null,   // "calibrating" | "active" when session started
   });
+  const sessionPhaseRef = useRef(null);  // for updateRepState to read synchronously
+  const romCalibrationRef = useRef(null); // for checkForm to read synchronously
 
   const [lastFormFeedback, setLastFormFeedback] = useState(null);
 
@@ -129,11 +133,21 @@ const REP_DETECTION = {       // temporary hold values (will change with algorit
   minFootLift: 0.06,
   minHipDrop: 0.04
 };
+const CALIBRATION_KNEE_BOTTOM = 140;  // relaxed but requires real squat (filters pose noise)
+const CALIBRATION_MIN_DURATION_MS = 1000;  // reject calibration if rep < 1s (filters noise)
+const DEPTH_PCT_THRESHOLD = 80;       // min % of personal ROM to pass depth check
+const OPTIMAL_ROM_MIN_KNEE = 95;      // cap: going deeper than this = bad form, use optimal
 
 const SAFETY_LIMITS = {
-  minHipDrop: 0.04,    // was 0.04
-  maxFootLift: 0.6,   // was 0.05
-  minTorsoDelta: 3     // was 4 (your torso delta is often small)
+  minHipDrop: 0.04,
+  maxFootLift: 0.6,
+  minTorsoDelta: 3,
+};
+// Relaxed limits during ROM calibration – shallower squats and foot movement are OK
+const CALIBRATION_SAFETY_LIMITS = {
+  minHipDrop: 0.01,
+  maxFootLift: 0.8,
+  minTorsoDelta: 3,
 };
 
 
@@ -404,9 +418,11 @@ function lowerBodyEligibleFront(lms) {
   //Rep-state + scoring
   function updateRepState(lms, ang, ts, onRepComplete) {
     let cur = phaseRef.current;
+    const isCalibrating = sessionPhaseRef.current === "calibrating";
+    const kneeBottomThreshold = isCalibrating ? CALIBRATION_KNEE_BOTTOM : REP_DETECTION.kneeBottom;
 
     const atTopKnee = ang.knee >= REP_DETECTION.kneeTop;
-    const atBotKnee = ang.knee <= REP_DETECTION.kneeBottom;
+    const atBotKnee = ang.knee <= kneeBottomThreshold;
     const leaveTop  = ang.knee < (REP_DETECTION.kneeTop - 5);
 
     // Anti-fake signals
@@ -422,10 +438,11 @@ function lowerBodyEligibleFront(lms) {
     footLiftEmaRef.current = alpha * rawFoot + (1 - alpha) * (footLiftEmaRef.current ?? 0);
     const footLift = footLiftEmaRef.current;
 
+    const limits = isCalibrating ? CALIBRATION_SAFETY_LIMITS : SAFETY_LIMITS;
     const bottomOK =
       atBotKnee &&
-      hipDrop >= SAFETY_LIMITS.minHipDrop &&
-      footLift <= SAFETY_LIMITS.maxFootLift;
+      hipDrop >= limits.minHipDrop &&
+      footLift <= limits.maxFootLift;
 
     // Update running min/max *only if rep is active*
     if (currentRepStats.current) {
@@ -749,6 +766,43 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   setFsmRepCompleteEvents(x => x + 1);
   const repMode = repModeRef.current ?? viewModeRef.current;
 
+  // ROM calibration: two reps – front first, then side – store personal depth per view
+  if (sessionPhaseRef.current === "calibrating") {
+    const minKnee = repSummary.minKnee;
+    const durationMs = repSummary.durationMs ?? 0;
+    const rom = romCalibrationRef.current || {};
+    const nextStep = rom.front ? "side" : "front";
+
+    // Reject calibration if rep was too fast – filters pose noise / accidental triggers
+    if (durationMs < CALIBRATION_MIN_DURATION_MS) {
+      setLastRepScore({ calibrationRejected: "repTooFast" });
+      setLastFormFeedback({ calibrationRejected: "repTooFast" });
+      return;
+    }
+    // Require correct view for this step
+    if (repMode !== nextStep) {
+      setLastRepScore({ calibrationRejected: "wrongView", expectedStep: nextStep });
+      setLastFormFeedback({ calibrationRejected: "wrongView", expectedStep: nextStep });
+      return;
+    }
+    if (typeof minKnee === "number") {
+      const storedMinKnee = Math.max(minKnee, OPTIMAL_ROM_MIN_KNEE);
+      const wasCapped = minKnee < OPTIMAL_ROM_MIN_KNEE;
+      const newRom = { ...rom, [repMode]: { minKnee: storedMinKnee } };
+      romCalibrationRef.current = newRom;
+      const bothDone = !!newRom.front && !!newRom.side;
+      if (bothDone) {
+        sessionPhaseRef.current = "active";
+        setSession(s => ({ ...s, romCalibration: newRom, sessionPhase: "active" }));
+      } else {
+        setSession(s => ({ ...s, romCalibration: newRom }));
+      }
+      setLastRepScore({ isCalibration: true, step: repMode, minKnee: storedMinKnee, wasCapped, bothDone, rom: newRom });
+      setLastFormFeedback({ calibrationStepComplete: true, step: repMode, minKnee: storedMinKnee, wasCapped, bothDone, rom: newRom });
+    }
+    return;
+  }
+
   // 1) Copy then clear the raw user trace
   const rawUserTrace = currentRepTraceRef.current.slice();
   currentRepTraceRef.current = [];
@@ -826,7 +880,10 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   };
 
   // 7) Form check (angle-based) + cosine-similarity flags from scoreRep
-  const form = checkForm({ ...repWithValgus, viewMode: repMode });
+  const form = checkForm(
+    { ...repWithValgus, viewMode: repMode },
+    { romCalibration: romCalibrationRef.current, kneeTop: REP_DETECTION.kneeTop, depthPctThreshold: DEPTH_PCT_THRESHOLD }
+  );
   const formWithFlags = { ...form, cosineFlags: result?.flags ?? [] };
 
   setLastFormFeedback(formWithFlags);
@@ -891,7 +948,23 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
     // Keep frontBaselineRef – don't clear it on Start so first squat counts
     currentRepStats.current = null;
     repModeRef.current = null;
-    setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
+    sessionPhaseRef.current = "calibrating";
+    romCalibrationRef.current = null;
+    setSession({
+      startedAt: Date.now(),
+      endedAt: null,
+      frames: [],
+      reps: [],
+      summary: null,
+      romCalibration: null,
+      sessionPhase: "calibrating",
+    });
+  }
+
+  function skipRomCalibration() {
+    sessionPhaseRef.current = "active";
+    romCalibrationRef.current = null;
+    setSession(s => (s?.startedAt ? { ...s, sessionPhase: "active" } : s));
   }
 
   function endSessionAndSave() {
@@ -926,9 +999,10 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
       console.warn("[HerHealth] quality scoring failed:", e);
     }
 
-    const finished = { ...s, startedAt, endedAt: now, summary, quality };
+    const { romCalibration, ...sessionForStorage } = s;
+    const finished = { ...sessionForStorage, startedAt, endedAt: now, summary, quality };
 
-    // Persist to localStorage as before
+    // Persist to localStorage (omit romCalibration – not persisted)
     try {
       const key = "herhealth_sessions";
       const all = JSON.parse(localStorage.getItem(key) || "[]");
@@ -945,6 +1019,8 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   setRejectedReps(0);
   setRepCount(0);
   setFsmRepCompleteEvents(0);
+  sessionPhaseRef.current = null;
+  romCalibrationRef.current = null;
   setSession({ startedAt: null, endedAt: null, frames: [], reps: [], summary: null });
 }
 
@@ -1264,6 +1340,20 @@ function computeAnglesSideAware(lms) {
           Mode: {viewMode === "front" ? "Front" : "Side"}
       </div>
 
+      {session?.sessionPhase === "calibrating" && (
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-amber-600/95 text-white px-6 py-3 rounded-xl text-center shadow-lg max-w-md">
+          <div className="font-semibold text-lg">
+            {session?.romCalibration?.front
+              ? "Step 2: Turn to the side"
+              : "Step 1: Face the camera"}
+          </div>
+          <div className="text-sm mt-1 opacity-95">
+            {session?.romCalibration?.front
+              ? "Do one comfortable squat from the side view"
+              : "Do one comfortable squat facing the camera"}
+          </div>
+        </div>
+      )}
 
     {simDebug && (
       <div className="fixed top-3 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-[11px] max-w-xs">
@@ -1414,35 +1504,78 @@ function computeAnglesSideAware(lms) {
           <span>Ref OK: {refDebug?.ok ? "YES" : "NO"}</span>
           <span>Ref len: {refDebug?.n ?? "–"}</span>
           <span>Ref modes: {refModes}</span>
+          {session?.sessionPhase === "calibrating" && (
+            <>
+              <span className="text-amber-300">
+                ROM: {session?.romCalibration?.front
+                  ? "2. Turn to the side and do one comfortable squat"
+                  : "1. Face the camera and do one comfortable squat"}
+              </span>
+              <button onClick={skipRomCalibration} className="px-2 py-0.5 rounded text-xs bg-amber-500/30 hover:bg-amber-500/50 text-amber-200">
+                Skip ROM
+              </button>
+            </>
+          )}
+          {session?.romCalibration?.front && session?.romCalibration?.side && (
+            <span className="text-emerald-300">
+              ROM: front {Math.round(session.romCalibration.front.minKnee)}°, side {Math.round(session.romCalibration.side.minKnee)}°
+            </span>
+          )}
         </div>
 
         {lastRepScore && (
           <div className="fixed bottom-20 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl text-sm max-w-xs">
-            <div>
-              Score: {typeof lastRepScore.score === "number"
-                ? lastRepScore.score
-                : (lastRepScore.score?.score ?? JSON.stringify(lastRepScore.score))}
-              {" "}({lastRepScore.label})
-            </div>
-
-            {lastFormFeedback && !lastFormFeedback.overallOK && (
-              <ul className="mt-1 list-disc list-inside text-xs text-red-200">
-                {lastFormFeedback.issues.map((msg, i) => (
-                  <li key={i}>{msg}</li>
-                ))}
-              </ul>
-            )}
-            {lastFormFeedback?.cosineFlags?.length > 0 && (
-              <ul className="mt-1 list-disc list-inside text-xs text-amber-200">
-                {lastFormFeedback.cosineFlags.map((msg, i) => (
-                  <li key={i}>{msg}</li>
-                ))}
-              </ul>
-            )}
-            {lastFormFeedback && lastFormFeedback.overallOK && !(lastFormFeedback.cosineFlags?.length > 0) && (
-              <div className="mt-1 text-xs text-emerald-200">
-                Nice – form looks solid on that rep.
+            {lastRepScore.calibrationRejected === "repTooFast" ? (
+              <div className="text-amber-200">
+                Rep too fast – do a slower squat (at least 1 second).
               </div>
+            ) : lastRepScore.calibrationRejected === "wrongView" ? (
+              <div className="text-amber-200">
+                {lastRepScore.expectedStep === "front"
+                  ? "Face the camera for front calibration first."
+                  : "Turn to the side for side calibration."}
+              </div>
+            ) : lastRepScore.isCalibration ? (
+              <div className="text-emerald-200">
+                {lastRepScore.bothDone && lastRepScore.rom ? (
+                  <>Calibration complete. Front: {Math.round(lastRepScore.rom.front?.minKnee ?? 0)}°, Side: {Math.round(lastRepScore.rom.side?.minKnee ?? 0)}°</>
+                ) : lastRepScore.wasCapped ? (
+                  `${lastRepScore.step === "front" ? "Front" : "Side"} ROM capped at optimal (${Math.round(lastRepScore.minKnee)}°) – going deeper can indicate poor form.`
+                ) : (
+                  `${lastRepScore.step === "front" ? "Front" : "Side"} calibrated: ${Math.round(lastRepScore.minKnee)}°. Now turn to the side and do one squat.`
+                )}
+              </div>
+            ) : (
+              <>
+                <div>
+                  Score: {typeof lastRepScore.score === "number"
+                    ? lastRepScore.score
+                    : (lastRepScore.score?.score ?? JSON.stringify(lastRepScore.score))}
+                  {" "}({lastRepScore.label})
+                </div>
+
+                {lastFormFeedback && !lastFormFeedback.overallOK && (
+                  <ul className="mt-1 list-disc list-inside text-xs text-red-200">
+                    {lastFormFeedback.issues.map((msg, i) => (
+                      <li key={i}>{msg}</li>
+                    ))}
+                  </ul>
+                )}
+                {lastFormFeedback?.cosineFlags?.length > 0 && (
+                  <ul className="mt-1 list-disc list-inside text-xs text-amber-200">
+                    {lastFormFeedback.cosineFlags.map((msg, i) => (
+                      <li key={i}>{msg}</li>
+                    ))}
+                  </ul>
+                )}
+                {lastFormFeedback && lastFormFeedback.overallOK && !(lastFormFeedback.cosineFlags?.length > 0) && (
+                  <div className="mt-1 text-xs text-emerald-200">
+                    {lastFormFeedback.depthPct != null
+                      ? `You hit ${Math.round(lastFormFeedback.depthPct)}% of your comfortable depth.`
+                      : "Nice – form looks solid on that rep."}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
