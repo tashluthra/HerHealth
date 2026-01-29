@@ -1,4 +1,23 @@
-// utils/trajectory.js
+/**
+ * trajectory.js
+ *
+ * Helpers for working with time-series data (like pose or movement traces).
+ *
+ * Features:
+ * - Fills missing values in a list of numbers by copying the last known value forward or backward.
+ * - Lets you pull out a single number series (like all knee angles) from a list of pose frames.
+ * - Lets you stretch or shrink a list of numbers to a fixed length, using smooth interpolation.
+ * - Lets you do the same resampling for a list of pose frames, for multiple keys at once.
+ *
+ * Main functions:
+ * - fillHoles: Fills missing values in a number list.
+ * - extractSeries: Gets a list of numbers for one key from a list of frames.
+ * - resampleSeries: Changes a number list to a new length, smoothly.
+ * - resampleTrace: Changes a list of pose frames to a new length, for several keys.
+ *
+ * Used for: Making pose or movement data the same length and filling gaps, so you can compare or analyze them.
+ */
+
 
 // Linear interpolation helper (safe for nulls)
 function lerp(a, b, t) {

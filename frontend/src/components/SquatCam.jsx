@@ -230,24 +230,14 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
   }
 }
 
-  // Use LEFT side to match coords panel (11,23,25,27)
-  function getJoints(lms) {
-    const s = lms[11], h = lms[23], k = lms[25], a = lms[27];
-    return { s, h, k, a };
-  }
-
-  function computeAngles(lms) {
-    const { s, h, k, a } = getJoints(lms);
-    if (!s || !h || !k || !a) return null;
-    const knee = angleDeg(h, k, a);
-    const hip  = angleDeg(s, h, k);
-    // torso vs vertical (0° = upright)
-    const tx = h.x - s.x, ty = h.y - s.y;
-    const torso = Math.round((Math.acos((ty) / (Math.hypot(tx, ty) || 1)) * 180) / Math.PI);
-    return { knee, hip, torso };
-  }
-
-  function torsoUprightFromLR(lms) {
+/**
+ * Computes the angle (in degrees) between the torso (shoulder-to-hip vector) and the vertical axis,
+ * using the average of left and right shoulders and hips.
+ *
+ * @param {Array<Object>} lms - Array of pose landmarks (MediaPipe format).
+ * @returns {number|null} The torso angle in degrees (0° = upright), or null if required landmarks are missing.
+ */
+function torsoUprightFromLR(lms) {
   const shL = lms[11], shR = lms[12], hipL = lms[23], hipR = lms[24];
   if (!shL || !shR || !hipL || !hipR) return null;
   const shoulder = { x: (shL.x + shR.x) / 2, y: (shL.y + shR.y) / 2 };
@@ -256,13 +246,32 @@ const footLiftEmaRef = useRef(0);  //exponential moving average for footLift
   return Math.round((Math.acos(ty / (Math.hypot(tx, ty) || 1)) * 180) / Math.PI);
 }
 
+/**
+ * Computes the average visibility score for a set of pose landmarks.
+ *
+ * @param {Array<Object>} lms - Array of pose landmarks (MediaPipe format).
+ * @param {Array<number>} idxs - Indices of the landmarks to include in the score.
+ * @returns {number} The average visibility (0 to 1) across the specified landmarks.
+ */
 function visibilityScore(lms, idxs) {
   const vals = idxs.map(i => (lms[i]?.visibility ?? 0));
   return vals.reduce((a,b)=>a+b,0) / Math.max(vals.length,1);
 }
 
+/**
+ * Builds a per-frame reference trace for a given mode ("front" or "side") from the expert reference templates.
+ * 
+ * It extracts the relevant trajectory data, determines the set of feature keys to use and constructs an array of frame objects-
+ * each containing the feature values for that frame. 
+ * If any required data is missing, it returns an empty array.
+ *
+ * @param {Object} refTemplates - Loaded reference templates object. 
+ * @param {string} mode - The mode to use, which determines which reference and keys to extract.
+ * @returns {Array<Object>} An array of frame objects, each mapping feature keys to their values for that frame.
+ *                          Returns an empty array if the reference or trajectory data is missing.
+ */
 function buildRefTraceForMode(refTemplates, mode) {
-  if (!refTemplates) return [];
+  if (!refTemplates) return []; // not loaded yet
 
   const ref = refTemplates?.[mode];
   if (!ref) return [];
@@ -275,7 +284,6 @@ function buildRefTraceForMode(refTemplates, mode) {
 
   if (!T) return [];
 
-  // NEW: prefer the keys listed in the JSON (less brittle)
   const keys =
     ref?.aggregate?.keys ??
     (mode === "side"
@@ -297,24 +305,34 @@ function buildRefTraceForMode(refTemplates, mode) {
   return frames;
 }
 
-
-
+/**
+ * Computes the main joint angles (knee, hip, torso) for front view.
+ * 
+ * Calculates the knee and hip angles for both left and right legs, applies visibility-based
+ * weighting to handle occlusions, and averages the results. The torso angle is computed from the average
+ * shoulder and hip positions. Returns null if required landmarks are missing or if angles cannot be computed.
+ *
+ * @param {Array<Object>} lms - Array of pose landmarks (MediaPipe format), indexed by landmark number.
+ * @returns {Object|null} An object with { knee, hip, torso, side: "F" } or null if computation fails.
+ */
 function computeAnglesFrontView(lms) {
-  // Left
+  // Left side landmrks 
   const sL=lms[11], hL=lms[23], kL=lms[25], aL=lms[27];
-  // Right
+  // Right side landmarks
   const sR=lms[12], hR=lms[24], kR=lms[26], aR=lms[28];
-  if (!(sL&&hL&&kL&&aL) && !(sR&&hR&&kR&&aR)) return null;
+  // if neither leg has all landmarks, return null
+  if (!(sL&&hL&&kL&&aL) && !(sR&&hR&&kR&&aR)) return null; 
 
   const haveL = (sL&&hL&&kL&&aL);
   const haveR = (sR&&hR&&kR&&aR);
 
+  // Compute knee and hip angles for each side
   const kneeL = haveL ? angleDeg(hL, kL, aL) : null;
   const hipL  = haveL ? angleDeg(sL, hL, kL) : null;
   const kneeR = haveR ? angleDeg(hR, kR, aR) : null;
   const hipR  = haveR ? angleDeg(sR, hR, kR) : null;
 
-  // visibility weighting (helps when one leg is occluded)
+  // Compute average visibility for each leg (used as weights)
   const wL = haveL ? visibilityScore(lms, [11,23,25,27]) : 0;
   const wR = haveR ? visibilityScore(lms, [12,24,26,28]) : 0;
 
@@ -831,23 +849,33 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
 
 
 
-  // session controls
-function startSession() {
-  setRepCount(0);
-  setPhase("Top");
-  phaseRef.current = "Top";
-  bottomSince.current = null;
-  topBaseline.current = null;
-  frontBaselineRef.current = {
-    symmetry0: null,
-    valgus0: null,
-    pelvic0: null,
-    depth0: null,
-  };
-  currentRepStats.current = null;
-  repModeRef.current = null;
-  setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
-}
+/**
+   * Initialise a new squat session.
+   * Resets all relevant state and refs to their starting values, including:
+   * - Rep count and phase
+   * - Baseline and eligibility trackers
+   * - Rep statistics and mode
+   * - Session object (start time, frames, reps, summary)
+   * 
+   * This function is called when the user starts a new squat session,
+   * ensuring all counters and trackers are cleared. 
+   */
+  function startSession() {
+    setRepCount(0); // reset rep count
+    setPhase("Top");
+    phaseRef.current = "Top";
+    bottomSince.current = null;
+    topBaseline.current = null;
+    frontBaselineRef.current = {
+      symmetry0: null,
+      valgus0: null,
+      pelvic0: null,
+      depth0: null,
+    };
+    currentRepStats.current = null;
+    repModeRef.current = null;
+    setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
+  }
 
   function endSessionAndSave() {
     setSession(s => {
