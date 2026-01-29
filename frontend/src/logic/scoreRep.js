@@ -1,34 +1,10 @@
 // algorithm definitions for scoring a single rep
-//it answers what features matter, how important each feature is, and how to combine them into a single score
+// it answers what features matter, how important each feature is, and how to combine them into a single score
 
-import { cosineSimilarityByKey } from "../utils/squatSimilarity"; 
+import { cosineSimilarityByKey } from "../utils/squatSimilarity";
+import { FRONT_KEYS, FRONT_WEIGHTS, SIDE_KEYS, SIDE_WEIGHTS } from "./scoringWeights";
 
-// Front-view biomechanics features used for scoring
-// Match:
-// - reference template keys
-// - runtime feature extraction keys
-export const FRONT_KEYS = ["valgus","symmetry","pelvic","depth"];
-
-// Side-view biomechanics features
-export const SIDE_KEYS  = ["knee","hip","ankle","torso"];
-
-//Research decision
-// Relative importance of each feature for overall rep quality for front view
-// Weights must sum to 1.0
-export const FRONT_WEIGHTS = {
-  valgus: 0.40,
-  symmetry: 0.25,
-  pelvic: 0.20,
-  depth: 0.15,
-};
-
-// Relative importance for side view
-export const SIDE_WEIGHTS = {
-  knee: 0.35,
-  hip: 0.25,
-  ankle: 0.15,
-  torso: 0.25,
-};
+export { FRONT_KEYS, FRONT_WEIGHTS, SIDE_KEYS, SIDE_WEIGHTS };
 
 // Scores a single squat repetition against an expert reference trace
 export function scoreRep({

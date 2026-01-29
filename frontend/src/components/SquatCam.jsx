@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-vision";
-import { scoreRepAgainstRef, classifyScore, cosineSimilarityByKey} from "../utils/squatSimilarity"; 
+import { classifyScore } from "../utils/squatSimilarity";
+import { scoreRep } from "../logic/scoreRep";
 import { scoreSessionReps } from "../metrics/repQuality";
 import { checkForm } from "../utils/formChecks";
 import { buildRepData } from "../logic/buildRepData";
@@ -276,11 +277,11 @@ function buildRefTraceForMode(refTemplates, mode) {
   const ref = refTemplates?.[mode];
   if (!ref) return [];
 
-  // NEW: support both formats
+  // Prefer weighted aggregate (median of clips) over single-clip trajectories
   const T =
-    ref?.trajectories ??
     ref?.aggregate?.centre ??
-    ref?.aggregate?.center;
+    ref?.aggregate?.center ??
+    ref?.trajectories;
 
   if (!T) return [];
 
@@ -454,6 +455,7 @@ function lowerBodyEligibleFront(lms) {
     } else if (cur === "Down" && bottomOK) {
       cur = "Bottom";
       bottomSince.current = ts;
+      if (currentRepStats.current) currentRepStats.current.bottomTorso = ang.torso;
 
     } else if (cur === "Down" && atTopKnee && !bottomSince.current) {
       // aborted rep: never reached bottom
@@ -484,6 +486,8 @@ function lowerBodyEligibleFront(lms) {
           tStart: currentRepStats.current.startTs ?? null,
           minKnee: currentRepStats.current.minKnee,
           maxTorso: currentRepStats.current.maxTorso,
+          topTorso: currentRepStats.current.topTorso ?? null,
+          bottomTorso: currentRepStats.current.bottomTorso ?? null,
           durationMs:
             currentRepStats.current.startTs != null ? ts - currentRepStats.current.startTs : null,
         };
@@ -765,28 +769,26 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   }
 
 
-  const cos = cosineSimilarityByKey(user60, ref60, keys);
+  // 4) Score: per-feature cosine similarity (60-point vectors), weighted to 0–100
+  const result = scoreRep({
+    userTrace60: user60,
+    refTrace60: ref60,
+    mode: repMode,
+  });
+
+  const scoreNum = result?.score ?? 0;
+  const label = classifyScore(scoreNum);
+
   setSimDebug(prev => ({
     ...(prev || {}),
     mode: repMode,
-    keys, // so the UI can show what you computed
+    keys,
     finiteCounts,
-    cosinePerKey: cos?.perKey || null,
-    cosineCoverage: cos?.coverage || null,
+    cosinePerKey: result?.perKeySimilarity || null,
     featureStats,
-    updatedAt: Date.now(), // proves it refreshed this rep
+    weightedSimilarity: result?.weightedSimilarity ?? null,
+    updatedAt: Date.now(),
   }));
-
-  // 4) Score (handle both “number” and “{score, err}” returns)
-  const result = scoreRepAgainstRef(user60, ref60, repMode, 60);
-
-  const scoreNum =
-    typeof result === "number" ? result : (result?.score ?? 0);
-
-  const err =
-    typeof result === "object" && result ? (result.err ?? null) : null;
-
-  const label = classifyScore(scoreNum);
 
   // 5) Valgus stats should use the SAME trace you scored (user60)
   const valgusValues = (repMode === "front")
@@ -798,19 +800,21 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
     ? valgusValues.reduce((a, b) => a + b, 0) / valgusValues.length
     : null;
 
-  const repWithValgus = { ...repSummary, peakValgus, meanValgus };
+  const repWithValgus = {
+    ...repSummary,
+    peakValgus,
+    meanValgus,
+    valgusMetric: peakValgus ?? meanValgus, // checkForm expects this for front-view valgus feedback
+  };
 
-  // 6) (Optional) coverage debug should also use user60/ref60
-  // const userCov = traceCoverage(user60, keys);
-  // const refCov  = traceCoverage(ref60, keys);
-
-  // 7) Form check + UI
+  // 7) Form check (angle-based) + cosine-similarity flags from scoreRep
   const form = checkForm({ ...repWithValgus, viewMode: repMode });
+  const formWithFlags = { ...form, cosineFlags: result?.flags ?? [] };
 
-  setLastFormFeedback(form);
-  setLastRepScore({ score: scoreNum, label, err, form });
+  setLastFormFeedback(formWithFlags);
+  setLastRepScore({ score: scoreNum, label, perKeySimilarity: result?.perKeySimilarity, form: formWithFlags });
 
-  if (!form.overallOK){
+  if (!formWithFlags.overallOK){
     setRejectedReps(x => x + 1);
     return;
   }
@@ -826,8 +830,8 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
         trace: user60,     //store the 60-frame trace
         score: scoreNum,
         label,
-        err,
-        form,
+        perKeySimilarity: result?.perKeySimilarity,
+        form: formWithFlags,
         viewMode: repMode,
       },
     ],
@@ -1407,7 +1411,14 @@ function computeAnglesSideAware(lms) {
                 ))}
               </ul>
             )}
-            {lastFormFeedback && lastFormFeedback.overallOK && (
+            {lastFormFeedback?.cosineFlags?.length > 0 && (
+              <ul className="mt-1 list-disc list-inside text-xs text-amber-200">
+                {lastFormFeedback.cosineFlags.map((msg, i) => (
+                  <li key={i}>{msg}</li>
+                ))}
+              </ul>
+            )}
+            {lastFormFeedback && lastFormFeedback.overallOK && !(lastFormFeedback.cosineFlags?.length > 0) && (
               <div className="mt-1 text-xs text-emerald-200">
                 Nice – form looks solid on that rep.
               </div>

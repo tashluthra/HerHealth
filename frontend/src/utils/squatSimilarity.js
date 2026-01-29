@@ -18,16 +18,18 @@
  * Used in: squat rep evaluation, feedback, and analytics.
  */
 
+import { FRONT_KEYS, FRONT_WEIGHTS, SIDE_KEYS, SIDE_WEIGHTS } from "../logic/scoringWeights";
+
 const MODE_SPECS = {
   side: {
-    keys: ["knee", "hip", "ankle", "torso"],
-    weights: { knee: 0.35, hip: 0.35, ankle: 0.10, torso: 0.20},
+    keys: SIDE_KEYS,
+    weights: SIDE_WEIGHTS,
     maxErr: 0.35, // degrees-ish; tune later with data
   },
   front: {
-    keys: ["valgus", "symmetry", "pelvic", "depth"],
-    weights: { valgus: 0.40, symmetry: 0.30, pelvic: 0.20, depth: 0.10 },
-    maxErr: 0.25, // these are normalised ratios; tune later with data
+    keys: FRONT_KEYS,
+    weights: FRONT_WEIGHTS,
+    maxErr: 0.25, // normalised ratios; tune later with data
   },
 };
 
@@ -43,42 +45,40 @@ const MODE_SPECS = {
 * @returns {Array<Object>} New trace, resampled and baseline-normalised.
 */
 export function normaliseTrace(trace, keys, steps = 60) {
-  // Return empty if no data or keys
-  if (!trace || trace.length === 0) return []; 
+  if (!trace || trace.length === 0) return [];
   if (!keys || keys.length === 0) return [];
-  if (trace.length === steps) return trace;
 
-  const out = [];
-  for (let i = 0; i < steps; i++) {
-    // Compute fractional index in original trace
-    const t = (i / (steps - 1)) * (trace.length - 1);
-    const idx = Math.floor(t);
-    const nextIdx = Math.min(idx + 1, trace.length - 1);
-    const alpha = t - idx; // interpolation factor
-
-    const a = trace[idx] || {};
-    const b = trace[nextIdx] || {};
-
-    const frame = {};
-    for (const k of keys) {
-      const av = a[k];
-      const bv = b[k];
-      // Linearly interpolate between frames for each key
-      frame[k] =
-        typeof av === "number" && typeof bv === "number"
-          ? av + (bv - av) * alpha
-          : null;
+  // Temporal: resample to fixed length if needed (linear interpolation)
+  let out;
+  if (trace.length === steps) {
+    out = trace.map((f) => ({ ...f }));
+  } else {
+    out = [];
+    for (let i = 0; i < steps; i++) {
+      const t = (i / (steps - 1)) * (trace.length - 1);
+      const idx = Math.floor(t);
+      const nextIdx = Math.min(idx + 1, trace.length - 1);
+      const alpha = t - idx;
+      const a = trace[idx] || {};
+      const b = trace[nextIdx] || {};
+      const frame = {};
+      for (const k of keys) {
+        const av = a[k];
+        const bv = b[k];
+        frame[k] =
+          typeof av === "number" && typeof bv === "number"
+            ? av + (bv - av) * alpha
+            : null;
+      }
+      out.push(frame);
     }
-    out.push(frame);
   }
 
-  // Use first frame as baseline for each key
+  // Spatial: baseline subtraction – align both traces to start at zero
   const base = {};
   for (const k of keys) {
     base[k] = typeof out[0]?.[k] === "number" ? out[0][k] : null;
   }
-
-  // Subtract baseline so all channels start at zero
   for (const frame of out) {
     for (const k of keys) {
       if (typeof frame[k] === "number" && typeof base[k] === "number") {
