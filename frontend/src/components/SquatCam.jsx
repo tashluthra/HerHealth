@@ -450,6 +450,24 @@ function lowerBodyEligibleFront(lms) {
       repModeRef.current = viewModeRef.current;   // lock mode for this rep
       currentRepTraceRef.current = [];            // reset trace for this rep
 
+      // Fallback: capture front baseline on first Top->Down if not yet set (fixes first-squat)
+      const mode = viewModeRef.current;
+      if (mode === "front" && lms) {
+        const b = frontBaselineRef.current;
+        const needsBaseline = !b || typeof b.symmetry0 !== "number";
+        if (needsBaseline) {
+          const f0 = computeFrontFeatures(lms);
+          if (f0 && typeof f0.symmetry === "number" && typeof f0.valgus === "number" &&
+              typeof f0.pelvic === "number" && typeof f0.depth === "number") {
+            const fb = frontBaselineRef.current;
+            if (!fb.symmetry0) fb.symmetry0 = f0.symmetry;
+            if (!fb.valgus0) fb.valgus0 = f0.valgus;
+            if (!fb.pelvic0) fb.pelvic0 = f0.pelvic;
+            if (!fb.depth0) fb.depth0 = f0.depth;
+          }
+        }
+      }
+
       
 
     } else if (cur === "Down" && bottomOK) {
@@ -596,8 +614,8 @@ function handlePoseResults(res) {
       const footLift = Math.max(ankleLift, heelLift || 0);
 
       const stable =
-        Math.abs(hipDrop) < 0.02 &&
-        footLift < 0.02;
+        Math.abs(hipDrop) < 0.05 &&
+        footLift < 0.05;
 
       if (
       stable &&
@@ -870,12 +888,7 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
     phaseRef.current = "Top";
     bottomSince.current = null;
     topBaseline.current = null;
-    frontBaselineRef.current = {
-      symmetry0: null,
-      valgus0: null,
-      pelvic0: null,
-      depth0: null,
-    };
+    // Keep frontBaselineRef – don't clear it on Start so first squat counts
     currentRepStats.current = null;
     repModeRef.current = null;
     setSession({ startedAt: Date.now(), endedAt: null, frames: [], reps: [], summary: null });
@@ -925,6 +938,14 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
 
     return finished;
   });
+  // Clear UI display state after saving
+  setLastRepScore(null);
+  setLastFormFeedback(null);
+  setAcceptedReps(0);
+  setRejectedReps(0);
+  setRepCount(0);
+  setFsmRepCompleteEvents(0);
+  setSession({ startedAt: null, endedAt: null, frames: [], reps: [], summary: null });
 }
 
 // --- Side-aware landmark selection ---
