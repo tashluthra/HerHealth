@@ -104,12 +104,18 @@ describe("checkForm", () => {
 
   describe("knee valgus (front view only)", () => {
     it("flags when valgusMetric > maxValgusMetric", () => {
-      const rep = { minKnee: 110, valgusMetric: 0.05, viewMode: "front" };
+      const rep = { minKnee: 110, valgusMetric: 0.06, viewMode: "front" };
       const result = checkForm(rep);
       expect(result.valgusOK).toBe(false);
       expect(result.issues).toContain(
         "Keep your knees tracking over your toes– avoid them collapsing inwards."
       );
+    });
+
+    it("passes when valgusMetric exactly at maxValgusMetric (0.05)", () => {
+      const rep = { minKnee: 110, valgusMetric: 0.05, viewMode: "front" };
+      const result = checkForm(rep);
+      expect(result.valgusOK).toBe(true);
     });
 
     it("passes when valgusMetric <= 0.025", () => {
@@ -159,6 +165,12 @@ describe("checkForm", () => {
       const result = checkForm(rep, { minDepthKnee: 120 });
       expect(result.depthOK).toBe(true);
     });
+
+    it("allows overriding maxValgusMetric via opts", () => {
+      const rep = { minKnee: 110, valgusMetric: 0.04, viewMode: "front" };
+      const result = checkForm(rep, { maxValgusMetric: 0.03 });
+      expect(result.valgusOK).toBe(false);
+    });
   });
 
   describe("romCalibration (side-only)", () => {
@@ -182,6 +194,15 @@ describe("checkForm", () => {
       const result = checkForm(rep, { romCalibration: null });
       expect(result.depthOK).toBe(true);
     });
+
+    it("fails depth when ROM calibration gives depthPct below threshold", () => {
+      const rep = { minKnee: 140, viewMode: "side" };
+      const rom = { minKnee: 90 };
+      const result = checkForm(rep, { romCalibration: rom, depthPctThreshold: 80 });
+      expect(result.depthOK).toBe(false);
+      expect(result.depthPct).toBeLessThan(80);
+      expect(result.issues.some((i) => i.includes("comfortable depth"))).toBe(true);
+    });
   });
 });
 
@@ -189,7 +210,7 @@ describe("FORM_THRESHOLDS", () => {
   it("exports expected threshold keys", () => {
     expect(FORM_THRESHOLDS).toHaveProperty("minDepthKnee", 115);
     expect(FORM_THRESHOLDS).toHaveProperty("maxForwardTorso", 45);
-    expect(FORM_THRESHOLDS).toHaveProperty("maxValgusMetric", 0.04);
+    expect(FORM_THRESHOLDS).toHaveProperty("maxValgusMetric", 0.05);
     expect(FORM_THRESHOLDS).toHaveProperty("sideMaxTorso", 42);
     expect(FORM_THRESHOLDS).toHaveProperty("maxTorsoDelta", 18);
     expect(FORM_THRESHOLDS).toHaveProperty("bottomTorsoMax", 42);

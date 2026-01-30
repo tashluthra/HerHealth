@@ -50,10 +50,16 @@ describe("similarityToScore", () => {
 
 describe("detectFormIssues", () => {
   describe("front mode", () => {
-    it("flags knee valgus when valgus < 0.75", () => {
-      const perKey = { valgus: 0.7, symmetry: 0.9, pelvic: 0.9, depth: 0.9 };
+    it("flags knee valgus when valgus < 0.5", () => {
+      const perKey = { valgus: 0.4, symmetry: 0.9, pelvic: 0.9, depth: 0.9 };
       const flags = detectFormIssues(perKey, "front");
       expect(flags).toContain("Knee valgus detected");
+    });
+
+    it("does not flag valgus when valgus >= 0.5", () => {
+      const perKey = { valgus: 0.5, symmetry: 0.9, pelvic: 0.9, depth: 0.9 };
+      const flags = detectFormIssues(perKey, "front");
+      expect(flags).not.toContain("Knee valgus detected");
     });
 
     it("flags left-right imbalance when symmetry < 0.70", () => {
@@ -75,9 +81,12 @@ describe("detectFormIssues", () => {
     });
 
     it("can return multiple flags", () => {
-      const perKey = { valgus: 0.6, symmetry: 0.6, pelvic: 0.9, depth: 0.5 };
+      const perKey = { valgus: 0.4, symmetry: 0.6, pelvic: 0.9, depth: 0.5 };
       const flags = detectFormIssues(perKey, "front");
       expect(flags.length).toBeGreaterThanOrEqual(2);
+      expect(flags).toContain("Knee valgus detected");
+      expect(flags).toContain("Left–right imbalance");
+      expect(flags).toContain("Insufficient depth");
     });
   });
 
@@ -97,6 +106,27 @@ describe("detectFormIssues", () => {
     it("returns empty when all above thresholds", () => {
       const perKey = { knee: 0.8, hip: 0.9, ankle: 0.9, torso: 0.75 };
       const flags = detectFormIssues(perKey, "side");
+      expect(flags).toHaveLength(0);
+    });
+
+    it("does not flag knee when knee >= 0.75 (boundary)", () => {
+      const perKey = { knee: 0.75, hip: 0.9, ankle: 0.9, torso: 0.9 };
+      const flags = detectFormIssues(perKey, "side");
+      expect(flags).not.toContain("Poor knee tracking");
+    });
+  });
+
+  describe("edge cases", () => {
+    it("handles missing perKey values gracefully", () => {
+      const perKey = { valgus: undefined, symmetry: 0.9, pelvic: 0.9, depth: 0.9 };
+      const flags = detectFormIssues(perKey, "front");
+      expect(Array.isArray(flags)).toBe(true);
+      expect(flags).not.toContain("Knee valgus detected");
+    });
+
+    it("returns empty for unknown mode", () => {
+      const perKey = { valgus: 0.3, symmetry: 0.5 };
+      const flags = detectFormIssues(perKey, "unknown");
       expect(flags).toHaveLength(0);
     });
   });
