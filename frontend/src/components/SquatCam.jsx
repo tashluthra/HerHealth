@@ -90,6 +90,7 @@ export default function SquatCam() {
   const romCalibrationRef = useRef(null); // for checkForm to read synchronously
 
   const [lastFormFeedback, setLastFormFeedback] = useState(null);
+  const [showScore, setShowScore] = useState(true);
 
   // smoothing + timing refs
   const smoothBuf = useRef({ knee: [], hip: [], torso: [], ankle: [] });
@@ -1524,10 +1525,19 @@ function computeAnglesSideAware(lms) {
               {session.romCalibration.minKnee != null && !session.romCalibration.front?.minKnee && !session.romCalibration.side?.minKnee ? `${Math.round(session.romCalibration.minKnee)}°` : ""}
             </span>
           )}
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showScore}
+              onChange={(e) => setShowScore(e.target.checked)}
+              className="rounded"
+            />
+            <span className="text-sm">Show score</span>
+          </label>
         </div>
 
         {lastRepScore && (
-          <div className="fixed bottom-20 left-3 z-50 bg-black/70 text-white px-3 py-2 rounded-xl text-sm max-w-xs">
+          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-black/80 text-white px-6 py-4 rounded-2xl text-lg max-w-md shadow-lg">
             {lastRepScore.calibrationRejected === "repTooFast" ? (
               <div className="text-amber-200">
                 Rep too fast – do a slower squat (at least 1 second).
@@ -1538,38 +1548,40 @@ function computeAnglesSideAware(lms) {
                   ? `ROM capped at optimal (${Math.round(lastRepScore.minKnee)}°) – going deeper can indicate poor form.`
                   : `${lastRepScore.view === "front" ? "Front" : "Side"} calibrated: ${Math.round(lastRepScore.minKnee)}°`}
                 {lastRepScore.needsFront || lastRepScore.needsSide ? (
-                  <div className="mt-1 text-amber-200 text-xs">
+                  <div className="mt-2 text-amber-200 text-base">
                     {lastRepScore.needsFront ? "Now face the camera and do one comfortable squat." : "Now turn to the side and do one comfortable squat."}
                   </div>
                 ) : (
-                  <div className="mt-1 text-xs">Calibration complete – both views ready.</div>
+                  <div className="mt-2 text-base">Calibration complete – both views ready.</div>
                 )}
               </div>
             ) : (
               <>
-                <div>
-                  Score: {typeof lastRepScore.score === "number"
-                    ? lastRepScore.score
-                    : (lastRepScore.score?.score ?? JSON.stringify(lastRepScore.score))}
-                  {" "}({lastRepScore.label})
-                </div>
+                {showScore && (
+                  <div className="text-base text-white/90 mb-2">
+                    Score: {typeof lastRepScore.score === "number"
+                      ? lastRepScore.score
+                      : (lastRepScore.score?.score ?? JSON.stringify(lastRepScore.score))}
+                    {" "}({lastRepScore.label})
+                  </div>
+                )}
 
                 {lastFormFeedback && !lastFormFeedback.overallOK && (
-                  <ul className="mt-1 list-disc list-inside text-xs text-red-200">
+                  <ul className="mt-2 list-disc list-inside text-lg text-red-200 space-y-1">
                     {lastFormFeedback.issues.map((msg, i) => (
-                      <li key={i}>{msg}</li>
+                      <li key={i} className="font-medium">{msg}</li>
                     ))}
                   </ul>
                 )}
                 {lastFormFeedback?.cosineFlags?.length > 0 && (
-                  <ul className="mt-1 list-disc list-inside text-xs text-amber-200">
+                  <ul className="mt-2 list-disc list-inside text-lg text-amber-200 space-y-1">
                     {lastFormFeedback.cosineFlags.map((msg, i) => (
-                      <li key={i}>{msg}</li>
+                      <li key={i} className="font-medium">{msg}</li>
                     ))}
                   </ul>
                 )}
                 {lastFormFeedback && lastFormFeedback.overallOK && !(lastFormFeedback.cosineFlags?.length > 0) && (
-                  <div className="mt-1 text-xs text-emerald-200">
+                  <div className="mt-2 text-lg text-emerald-200 font-medium">
                     {lastFormFeedback.depthPct != null
                       ? `You hit ${Math.round(lastFormFeedback.depthPct)}% of your comfortable depth.`
                       : "Nice – form looks solid on that rep."}
