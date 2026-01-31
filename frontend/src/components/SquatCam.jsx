@@ -83,7 +83,7 @@ export default function SquatCam() {
     frames: [],       // optional diagnostics (kept small)
     reps: [],         // per-rep metrics
     summary: null,
-    romCalibration: null,   // { minKnee } – side-view only, personal ROM (not persisted)
+    romCalibration: null,   // { front?: { minKnee }, side?: { minKnee } } – personal ROM per view (not persisted)
     sessionPhase: null,   // "calibrating" | "active" when session started
   });
   const sessionPhaseRef = useRef(null);  // for updateRepState to read synchronously
@@ -778,7 +778,7 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
   setFsmRepCompleteEvents(x => x + 1);
   const repMode = repModeRef.current ?? viewModeRef.current;
 
-  // ROM calibration: one rep, side view only – knee angle reliable from side; front uses absolute depth
+  // ROM calibration: one rep per view (front + side) – both views get personalized depth
   if (sessionPhaseRef.current === "calibrating") {
     const minKnee = repSummary.minKnee;
     const durationMs = repSummary.durationMs ?? 0;
@@ -789,21 +789,26 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
       setLastFormFeedback({ calibrationRejected: "repTooFast" });
       return;
     }
-    // Require side view – knee angle from the side is accurate for depth; front uses absolute threshold
-    if (repMode !== "side") {
-      setLastRepScore({ calibrationNeedsSide: true });
-      setLastFormFeedback({ calibrationNeedsSide: true });
-      return;
-    }
     if (typeof minKnee === "number") {
       const storedMinKnee = Math.max(minKnee, OPTIMAL_ROM_MIN_KNEE);
       const wasCapped = minKnee < OPTIMAL_ROM_MIN_KNEE;
-      const newRom = { minKnee: storedMinKnee };
+      const prev = romCalibrationRef.current || {};
+      const newRom = {
+        ...prev,
+        [repMode]: { minKnee: storedMinKnee },
+      };
       romCalibrationRef.current = newRom;
-      sessionPhaseRef.current = "active";
-      setSession(s => ({ ...s, romCalibration: newRom, sessionPhase: "active" }));
-      setLastRepScore({ isCalibration: true, minKnee: storedMinKnee, wasCapped });
-      setLastFormFeedback({ calibrationComplete: true, minKnee: storedMinKnee, wasCapped });
+      const hasFront = typeof newRom.front?.minKnee === "number";
+      const hasSide = typeof newRom.side?.minKnee === "number";
+      const bothCalibrated = hasFront && hasSide;
+      if (bothCalibrated) {
+        sessionPhaseRef.current = "active";
+        setSession(s => ({ ...s, romCalibration: newRom, sessionPhase: "active" }));
+      } else {
+        setSession(s => ({ ...s, romCalibration: newRom }));
+      }
+      setLastRepScore({ isCalibration: true, minKnee: storedMinKnee, wasCapped, view: repMode, needsFront: !hasFront, needsSide: !hasSide });
+      setLastFormFeedback({ calibrationComplete: true, minKnee: storedMinKnee, wasCapped, view: repMode, needsFront: !hasFront, needsSide: !hasSide });
     }
     return;
   }
@@ -1503,14 +1508,21 @@ function computeAnglesSideAware(lms) {
           <span>Ref modes: {refModes}</span>
           {session?.sessionPhase === "calibrating" && (
             <>
-              <span className="text-amber-300">ROM: Turn to the side and do one comfortable squat</span>
+              <span className="text-amber-300">
+                ROM: {!session.romCalibration?.front?.minKnee ? "Face camera, do one squat" : !session.romCalibration?.side?.minKnee ? "Turn to side, do one squat" : "Calibrating..."}
+              </span>
               <button onClick={skipRomCalibration} className="px-2 py-0.5 rounded text-xs bg-amber-500/30 hover:bg-amber-500/50 text-amber-200">
                 Skip ROM
               </button>
             </>
           )}
           {session?.romCalibration && (
-            <span className="text-emerald-300">ROM: {Math.round(session.romCalibration.minKnee)}°</span>
+            <span className="text-emerald-300">
+              ROM: {session.romCalibration.front?.minKnee != null ? `front ${Math.round(session.romCalibration.front.minKnee)}°` : ""}
+              {session.romCalibration.front?.minKnee != null && session.romCalibration.side?.minKnee != null ? " | " : ""}
+              {session.romCalibration.side?.minKnee != null ? `side ${Math.round(session.romCalibration.side.minKnee)}°` : ""}
+              {session.romCalibration.minKnee != null && !session.romCalibration.front?.minKnee && !session.romCalibration.side?.minKnee ? `${Math.round(session.romCalibration.minKnee)}°` : ""}
+            </span>
           )}
         </div>
 
@@ -1520,15 +1532,18 @@ function computeAnglesSideAware(lms) {
               <div className="text-amber-200">
                 Rep too fast – do a slower squat (at least 1 second).
               </div>
-            ) : lastRepScore.calibrationNeedsSide ? (
-              <div className="text-amber-200">
-                Turn to the side to calibrate ROM – knee angle is more accurate from the side.
-              </div>
             ) : lastRepScore.isCalibration ? (
               <div className="text-emerald-200">
                 {lastRepScore.wasCapped
                   ? `ROM capped at optimal (${Math.round(lastRepScore.minKnee)}°) – going deeper can indicate poor form.`
-                  : `Calibration complete. Your comfortable depth: ${Math.round(lastRepScore.minKnee)}°`}
+                  : `${lastRepScore.view === "front" ? "Front" : "Side"} calibrated: ${Math.round(lastRepScore.minKnee)}°`}
+                {lastRepScore.needsFront || lastRepScore.needsSide ? (
+                  <div className="mt-1 text-amber-200 text-xs">
+                    {lastRepScore.needsFront ? "Now face the camera and do one comfortable squat." : "Now turn to the side and do one comfortable squat."}
+                  </div>
+                ) : (
+                  <div className="mt-1 text-xs">Calibration complete – both views ready.</div>
+                )}
               </div>
             ) : (
               <>

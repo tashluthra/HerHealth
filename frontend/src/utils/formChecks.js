@@ -6,7 +6,7 @@ export const FORM_THRESHOLDS = {
     maxForwardTorso: 45,     
     //Valgus: our metric is "feet width – knee width" in normalised x.
     //Bigger positive value = knees closer together than feet.
-    maxValgusMetric: 0.05,   //2.5% of frame width- may drop to 2% later
+    maxValgusMetric: 0.08,   // relaxed – only flag obvious valgus (was 0.05)
 
     sideMaxTorso: 42, //stricter but allows earlier catching of forward lean
     maxTorsoDelta: 18,  //max change in torso angle during rep
@@ -28,11 +28,15 @@ export function checkForm(rep, opts = {}) {
     const issues = [];
     let depthPct = null;
 
-    // 1) Depth – ROM calibration only for side view (knee angle reliable from side). Front uses absolute threshold.
+    // 1) Depth – ROM calibration for both views (rom.front for front, rom.side for side)
     const kneeTop = cfg.kneeTop ?? 168;
     const depthPctThreshold = cfg.depthPctThreshold ?? 80;
     const rom = cfg.romCalibration;
-    const romMinKnee = (rom && isSide && typeof rom.minKnee === "number") ? rom.minKnee : null;
+    let romMinKnee = null;
+    if (rom && typeof rep.minKnee === "number") {
+      if (isFront && typeof rom.front?.minKnee === "number") romMinKnee = rom.front.minKnee;
+      else if (isSide) romMinKnee = (typeof rom.side?.minKnee === "number" ? rom.side.minKnee : null) ?? (typeof rom.minKnee === "number" ? rom.minKnee : null);
+    }
 
     let depthOK;
     if (romMinKnee != null && typeof rep.minKnee === "number") {

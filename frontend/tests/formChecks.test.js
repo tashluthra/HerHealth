@@ -104,7 +104,7 @@ describe("checkForm", () => {
 
   describe("knee valgus (front view only)", () => {
     it("flags when valgusMetric > maxValgusMetric", () => {
-      const rep = { minKnee: 110, valgusMetric: 0.06, viewMode: "front" };
+      const rep = { minKnee: 110, valgusMetric: 0.09, viewMode: "front" };
       const result = checkForm(rep);
       expect(result.valgusOK).toBe(false);
       expect(result.issues).toContain(
@@ -112,8 +112,8 @@ describe("checkForm", () => {
       );
     });
 
-    it("passes when valgusMetric exactly at maxValgusMetric (0.05)", () => {
-      const rep = { minKnee: 110, valgusMetric: 0.05, viewMode: "front" };
+    it("passes when valgusMetric exactly at maxValgusMetric (0.08)", () => {
+      const rep = { minKnee: 110, valgusMetric: 0.08, viewMode: "front" };
       const result = checkForm(rep);
       expect(result.valgusOK).toBe(true);
     });
@@ -167,14 +167,30 @@ describe("checkForm", () => {
     });
 
     it("allows overriding maxValgusMetric via opts", () => {
-      const rep = { minKnee: 110, valgusMetric: 0.04, viewMode: "front" };
-      const result = checkForm(rep, { maxValgusMetric: 0.03 });
+      const rep = { minKnee: 110, valgusMetric: 0.05, viewMode: "front" };
+      const result = checkForm(rep, { maxValgusMetric: 0.04 });
       expect(result.valgusOK).toBe(false);
     });
   });
 
-  describe("romCalibration (side-only)", () => {
-    it("uses ROM for side view when romCalibration.minKnee exists", () => {
+  describe("romCalibration (dual: front + side)", () => {
+    it("uses ROM for side view when romCalibration.side.minKnee exists", () => {
+      const rep = { minKnee: 100, viewMode: "side" };
+      const rom = { side: { minKnee: 90 } };
+      const result = checkForm(rep, { romCalibration: rom, depthPctThreshold: 80 });
+      expect(result.depthOK).toBe(true);
+      expect(result.depthPct).toBeGreaterThanOrEqual(80);
+    });
+
+    it("uses ROM for front view when romCalibration.front.minKnee exists", () => {
+      const rep = { minKnee: 115, viewMode: "front" };
+      const rom = { front: { minKnee: 120 } };
+      const result = checkForm(rep, { romCalibration: rom, depthPctThreshold: 80 });
+      expect(result.depthOK).toBe(true);
+      expect(result.depthPct).toBeGreaterThanOrEqual(80);
+    });
+
+    it("falls back to legacy rom.minKnee for side view when rom.side missing", () => {
       const rep = { minKnee: 100, viewMode: "side" };
       const rom = { minKnee: 90 };
       const result = checkForm(rep, { romCalibration: rom, depthPctThreshold: 80 });
@@ -182,9 +198,9 @@ describe("checkForm", () => {
       expect(result.depthPct).toBeGreaterThanOrEqual(80);
     });
 
-    it("always uses absolute depth for front view (ROM is side-only)", () => {
+    it("uses absolute depth for front view when rom.front missing", () => {
       const rep = { minKnee: 110, viewMode: "front" };
-      const rom = { minKnee: 90 };
+      const rom = { side: { minKnee: 90 } };
       const result = checkForm(rep, { romCalibration: rom });
       expect(result.depthOK).toBe(true); // passes absolute minDepthKnee (115)
     });
@@ -195,9 +211,18 @@ describe("checkForm", () => {
       expect(result.depthOK).toBe(true);
     });
 
-    it("fails depth when ROM calibration gives depthPct below threshold", () => {
+    it("fails depth when ROM calibration gives depthPct below threshold (side)", () => {
       const rep = { minKnee: 140, viewMode: "side" };
-      const rom = { minKnee: 90 };
+      const rom = { side: { minKnee: 90 } };
+      const result = checkForm(rep, { romCalibration: rom, depthPctThreshold: 80 });
+      expect(result.depthOK).toBe(false);
+      expect(result.depthPct).toBeLessThan(80);
+      expect(result.issues.some((i) => i.includes("comfortable depth"))).toBe(true);
+    });
+
+    it("fails depth when ROM calibration gives depthPct below threshold (front)", () => {
+      const rep = { minKnee: 140, viewMode: "front" };
+      const rom = { front: { minKnee: 120 } };
       const result = checkForm(rep, { romCalibration: rom, depthPctThreshold: 80 });
       expect(result.depthOK).toBe(false);
       expect(result.depthPct).toBeLessThan(80);
@@ -210,7 +235,7 @@ describe("FORM_THRESHOLDS", () => {
   it("exports expected threshold keys", () => {
     expect(FORM_THRESHOLDS).toHaveProperty("minDepthKnee", 115);
     expect(FORM_THRESHOLDS).toHaveProperty("maxForwardTorso", 45);
-    expect(FORM_THRESHOLDS).toHaveProperty("maxValgusMetric", 0.05);
+    expect(FORM_THRESHOLDS).toHaveProperty("maxValgusMetric", 0.08);
     expect(FORM_THRESHOLDS).toHaveProperty("sideMaxTorso", 42);
     expect(FORM_THRESHOLDS).toHaveProperty("maxTorsoDelta", 18);
     expect(FORM_THRESHOLDS).toHaveProperty("bottomTorsoMax", 42);

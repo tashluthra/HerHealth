@@ -39,7 +39,7 @@ export function detectFormIssues(perKey, mode) {
   const flags = [];
 
   if (mode === "front") {
-    if (perKey.valgus < 0.5) flags.push("Knee valgus detected");
+    if (perKey.valgus < 0.35) flags.push("Knee valgus detected"); // relaxed – only flag obvious trajectory mismatch
     if (perKey.symmetry < 0.70) flags.push("Left–right imbalance");
     if (perKey.depth < 0.65) flags.push("Insufficient depth");
   }

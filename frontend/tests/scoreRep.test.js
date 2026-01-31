@@ -50,14 +50,14 @@ describe("similarityToScore", () => {
 
 describe("detectFormIssues", () => {
   describe("front mode", () => {
-    it("flags knee valgus when valgus < 0.5", () => {
-      const perKey = { valgus: 0.4, symmetry: 0.9, pelvic: 0.9, depth: 0.9 };
+    it("flags knee valgus when valgus < 0.35", () => {
+      const perKey = { valgus: 0.3, symmetry: 0.9, pelvic: 0.9, depth: 0.9 };
       const flags = detectFormIssues(perKey, "front");
       expect(flags).toContain("Knee valgus detected");
     });
 
-    it("does not flag valgus when valgus >= 0.5", () => {
-      const perKey = { valgus: 0.5, symmetry: 0.9, pelvic: 0.9, depth: 0.9 };
+    it("does not flag valgus when valgus >= 0.35", () => {
+      const perKey = { valgus: 0.4, symmetry: 0.9, pelvic: 0.9, depth: 0.9 };
       const flags = detectFormIssues(perKey, "front");
       expect(flags).not.toContain("Knee valgus detected");
     });
@@ -81,7 +81,7 @@ describe("detectFormIssues", () => {
     });
 
     it("can return multiple flags", () => {
-      const perKey = { valgus: 0.4, symmetry: 0.6, pelvic: 0.9, depth: 0.5 };
+      const perKey = { valgus: 0.3, symmetry: 0.6, pelvic: 0.9, depth: 0.5 };
       const flags = detectFormIssues(perKey, "front");
       expect(flags.length).toBeGreaterThanOrEqual(2);
       expect(flags).toContain("Knee valgus detected");
