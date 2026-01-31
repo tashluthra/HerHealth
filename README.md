@@ -1,20 +1,19 @@
 # HerHealth
 
-3rd Year Project focuisng on women's health
+3rd Year Project focusing on women's health – camera-based squat analysis with pose detection and form feedback.
 
-## HerHealth — Dev Quickstart
+## Dev Quickstart
 
-### Backend (Docker)
-
-- `docker compose up -d`
-- Test: `curl http://localhost:8000/ping` → `{"status":"ok","env":"local"}`
-
-### Frontend
+### Frontend (main app)
 
 - `cd frontend && npm install && npm run dev`
-- Visit `http://localhost:5173` (shows /ping result)
+- Visit `http://localhost:5173` – squat analysis with live camera, rep counting, ROM calibration, and form feedback
 
-### Cloud
+### Tests
 
-- API: `https://herhealth-api.onrender.com/ping`
-- Frontend `.env`: `VITE_API_URL=https://herhealth-api.onrender.com`
+- `cd frontend && npm run test` – runs Vitest unit tests
+
+### Backend (reference data only)
+
+- `cd backend` – contains `build_reference_templates.py` for processing videos into reference trajectories
+- No API server; the frontend runs standalone with MediaPipe pose detection
