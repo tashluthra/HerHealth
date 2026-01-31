@@ -1241,75 +1241,6 @@ function computeAnglesSideAware(lms) {
                   utils.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS);
                   handlePoseResults(res);
 
-                  const info = lastFrameInfoRef.current;
-
-                if (info?.ang) {
-                const { knee, hip, torso } = info.ang;
-                const side = info.side ?? "L";
-                const mode = info.mode ?? "front";
-
-                ctx.fillStyle = "rgba(0,0,0,0.6)";
-                ctx.fillRect(10, 30, 260, 90);
-                ctx.fillStyle = "white";
-                ctx.font = "14px system-ui, sans-serif";
-                ctx.fillText(`Knee: ${knee}°`, 18, 50);
-                ctx.fillText(`Hip:  ${hip}°`, 18, 68);
-                ctx.fillText(`Torso:${torso}°`, 18, 86);
-                ctx.fillText(`Phase: ${phaseRef.current}  Side: ${side}  Mode: ${mode}`, 18, 104);
-              }
-
-                  // --- DEBUG OVERLAY (after handlePoseResults) ---
-                    const base = topBaseline.current;
-                    const sig  = curSig.current || {};
-
-                    const I = IDX[sideUsed] || IDX.L;
-                    const s2 = lm[I.shoulder], h2 = lm[I.hip], k2 = lm[I.knee], a2 = lm[I.ankle];
-                    const tx2 = h2.x - s2.x, ty2 = h2.y - s2.y;
-                    const torsoLive = Math.round((Math.acos(ty2 / (Math.hypot(tx2,ty2)||1)) * 180) / Math.PI);
-
-                    const hipDrop   = base && sig.hipY   != null ? (sig.hipY - base.hipY) : 0;  // + = down
-                    const ankleLift = base && sig.ankleY != null ? Math.abs(sig.ankleY - base.ankleY) : 0;
-                    const heelLift  = base && sig.heelY  != null ? Math.abs(sig.heelY  - base.heelY)  : 0;
-                    const footLift  = Math.max(ankleLift, heelLift || 0);
-                    const torsoD    = base ? (torsoLive - (base.torso ?? torsoLive)) : 0;
-
-                    ctx.fillStyle = "rgba(0,0,0,0.6)";
-                    ctx.fillRect(10, 200, 300, 72);
-                    ctx.fillStyle = "white";
-                    ctx.font = "12px system-ui, sans-serif";
-                    ctx.fillText(`hipDrop: ${hipDrop.toFixed(3)}  footLift: ${footLift.toFixed(3)}`, 18, 220);
-                    ctx.fillText(`torsoΔ: ${Math.round(torsoD)}°  Phase: ${phase}`, 18, 238);
-                    // --- END DEBUG OVERLAY ---
-
-                  
-
-                                    // === ANGLE OVERLAY (left side indices 11,23,25,27) ===
-                  const s = lm[11], h = lm[23], k = lm[25], a = lm[27];
-                  const deg = (A,B,C) => {
-                    const v1 = { x: A.x - B.x, y: A.y - B.y };
-                    const v2 = { x: C.x - B.x, y: C.y - B.y };
-                    const cos = Math.min(1, Math.max(-1,
-                      (v1.x*v2.x + v1.y*v2.y) / ((Math.hypot(v1.x,v1.y)||1)*(Math.hypot(v2.x,v2.y)||1))
-                    ));
-                    return Math.round((Math.acos(cos) * 180) / Math.PI);
-                  };
-                  const knee = deg(h,k,a);
-                  const hip  = deg(s,h,k);
-                  const tx = h.x - s.x, ty = h.y - s.y;
-                  const torso = Math.round((Math.acos(ty / (Math.hypot(tx,ty)||1)) * 180) / Math.PI);
-
-                  // draw a small HUD box
-                  ctx.fillStyle = "rgba(0,0,0,0.6)";
-                  ctx.fillRect(10, 30, 220, 78);
-                  ctx.fillStyle = "white";
-                  ctx.font = "14px system-ui, sans-serif";
-                  ctx.fillText(`Knee: ${knee}°`, 18, 50);
-                  ctx.fillText(`Hip:  ${hip}°`, 18, 68);
-                  ctx.fillText(`Torso:${torso}°`, 18, 86);
-                  ctx.fillText(`Phase: ${phaseRef.current}  Side: ${sideUsed}`, 18, 104);
-                  // === END ANGLE OVERLAY ===
-
-
                 }
               } catch (e) {
                 console.error("[HerHealth] detectForVideo error:", e);
@@ -1351,110 +1282,22 @@ function computeAnglesSideAware(lms) {
           Mode: {viewMode === "front" ? "Front" : "Side"}
       </div>
 
-      {session?.sessionPhase === "calibrating" && (
-        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-amber-600/95 text-white px-6 py-3 rounded-xl text-center shadow-lg max-w-md">
-          <div className="font-semibold text-lg">ROM calibration</div>
-          <div className="text-sm mt-1 opacity-95">Turn to the side and do one comfortable squat</div>
-        </div>
-      )}
-
-    {simDebug && (
-      <div className="fixed top-3 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-[11px] max-w-xs">
-        <div className="font-semibold">SimDebug snapshot</div>
-        <div>mode: {simDebug.mode ?? "–"}</div>
-        <div>has cosinePerKey: {simDebug.cosinePerKey ? "yes" : "no"}</div>
-        <div>keys: {simDebug.keys ? simDebug.keys.join(", ") : "–"}</div>
-        <div>updatedAt: {simDebug.updatedAt ?? "–"}</div>
-      </div>
-    )}
-
-    {simDebug && (
-      <div className="fixed top-40 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-xs max-w-xs">
-        <div className="font-semibold">Similarity debug</div>
-
-        <div>Mode: {simDebug.mode}</div>
-        <div>User frames: {simDebug.userFrames}</div>
-        <div>Ref frames: {simDebug.refFrames}</div>
-
-        <div className="mt-1">
-          Score: {typeof simDebug.score === "number" ? simDebug.score.toFixed(1) : simDebug.score}
-        </div>
-
-        {/* ───── Per-feature cosine similarity ───── */}
-        {simDebug.cosinePerKey && (
-          <div className="mt-2">
-            <div className="font-semibold">Cosine similarity</div>
-            {Object.entries(simDebug.cosinePerKey).map(([k, v]) => (
-              <div key={k}>
-                {k}: {typeof v === "number" ? v.toFixed(3) : "–"}
-              </div>
-            ))}
+      {session?.sessionPhase === "calibrating" && (() => {
+        const hasFront = typeof session?.romCalibration?.front?.minKnee === "number";
+        const hasSide = typeof session?.romCalibration?.side?.minKnee === "number";
+        const romMessage = !hasFront && !hasSide
+          ? "Do one comfortable squat"
+          : hasFront && !hasSide
+            ? "Turn to the side and do one comfortable squat"
+            : "Face the camera and do one comfortable squat";
+        return (
+          <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-amber-600/95 text-white px-6 py-3 rounded-xl text-center shadow-lg max-w-md">
+            <div className="font-semibold text-lg">ROM calibration</div>
+            <div className="text-sm mt-1 opacity-95">{romMessage}</div>
           </div>
-        )}
+        );
+      })()}
 
-        {/* ───── Weights used ───── */}
-        {simDebug.weights && (
-          <div className="mt-2 opacity-90">
-            <div className="font-semibold">Weights</div>
-            {Object.entries(simDebug.weights).map(([k, w]) => (
-              <div key={k}>
-                {k}: {(w * 100).toFixed(0)}%
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ───── Final weighted contributions ───── */}
-        {simDebug.weighted && (
-          <div className="mt-2 opacity-90">
-            <div className="font-semibold">Weighted contribution</div>
-            {Object.entries(simDebug.weighted).map(([k, v]) => (
-              <div key={k}>
-                {k}: {typeof v === "number" ? v.toFixed(3) : "–"}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* ───── Coverage sanity check ───── */}
-        {simDebug.cosineCoverage && (
-          <div className="mt-2 opacity-80">
-            <div className="font-semibold">Coverage</div>
-            {Object.entries(simDebug.cosineCoverage).map(([k, c]) => (
-              <div key={k}>
-                {k}: both {c?.both ?? 0} frames
-                {typeof c?.uRange === "number" && typeof c?.rRange === "number" && (
-                  <>
-                    {" "} (uRange {c.uRange.toFixed(3)}, rRange {c.rRange.toFixed(3)}
-                    {c.flatBoth ? ", flat" : ""})
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-
-
-      </div>
-    )}
-
-    <div className="fixed bottom-56 left-3 z-50 bg-black/80 text-white px-3 py-2 rounded-xl text-xs">
-      <div className="font-semibold">Front debug</div>
-      <div>eligible ok: {frontDbg.eligibleOk}</div>
-      <div>eligible no: {frontDbg.eligibleNo}</div>
-      <div>features ok: {frontDbg.featOk}</div>
-      <div>features no: {frontDbg.featNo}</div>
-    </div>
-
-    {refTemplates && (
-      <div className="fixed top-16 right-3 z-50 bg-emerald-700/80 text-white px-3 py-2 rounded-xl text-xs">
-        <div>Ref loaded ✓</div>
-        <div>Mode: {viewMode}</div>
-        <div>Front file: {refTemplates.front?.file}</div>
-        <div>Side file: {refTemplates.side?.file}</div>
-      </div>
-    )}
 
 
       <div className="w-full max-w-3xl mx-auto p-4 grid gap-3">
@@ -1492,18 +1335,18 @@ function computeAnglesSideAware(lms) {
           <button onClick={endSessionAndSave} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">End &amp; Save</button>
           <button onClick={downloadSessions} className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20">Download Data</button>
 
-          <span>FPS: {fps}</span>
-          <span>Reps: {repCount}</span>
-          <span>Phase: {phase}</span>
-          <span>FSM Rep Complete Events: {fsmRepCompleteEvents}</span>
+          {/*<span>FPS: {fps}</span>*/}
+          {/*<span>Reps: {repCount}</span>*/}
+          {/*<span>Phase: {phase}</span>*/}
+          {/*<span>FSM Rep Complete Events: {fsmRepCompleteEvents}</span>*/} 
           <span>Accepted Reps: {acceptedReps}</span>
           <span>Rejected Reps: {rejectedReps}</span>
-          <span>
+          {/*<span>
             Front baseline:{" "}
             <strong className={frontBaseReady ? "text-green-400" : "text-red-400"}>
               {frontBaseReady ? "READY" : "NOT READY"}
             </strong>
-          </span>
+          </span>*
           <span>Ref OK: {refDebug?.ok ? "YES" : "NO"}</span>
           <span>Ref len: {refDebug?.n ?? "–"}</span>
           <span>Ref modes: {refModes}</span>
@@ -1516,7 +1359,7 @@ function computeAnglesSideAware(lms) {
                 Skip ROM
               </button>
             </>
-          )}
+          )}*/}
           {session?.romCalibration && (
             <span className="text-emerald-300">
               ROM: {session.romCalibration.front?.minKnee != null ? `front ${Math.round(session.romCalibration.front.minKnee)}°` : ""}
@@ -1536,27 +1379,9 @@ function computeAnglesSideAware(lms) {
           </label>
         </div>
 
-        {lastRepScore && (
+        {lastRepScore && !lastRepScore.calibrationRejected && !lastRepScore.isCalibration && (
           <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-black/80 text-white px-6 py-4 rounded-2xl text-lg max-w-md shadow-lg">
-            {lastRepScore.calibrationRejected === "repTooFast" ? (
-              <div className="text-amber-200">
-                Rep too fast – do a slower squat (at least 1 second).
-              </div>
-            ) : lastRepScore.isCalibration ? (
-              <div className="text-emerald-200">
-                {lastRepScore.wasCapped
-                  ? `ROM capped at optimal (${Math.round(lastRepScore.minKnee)}°) – going deeper can indicate poor form.`
-                  : `${lastRepScore.view === "front" ? "Front" : "Side"} calibrated: ${Math.round(lastRepScore.minKnee)}°`}
-                {lastRepScore.needsFront || lastRepScore.needsSide ? (
-                  <div className="mt-2 text-amber-200 text-base">
-                    {lastRepScore.needsFront ? "Now face the camera and do one comfortable squat." : "Now turn to the side and do one comfortable squat."}
-                  </div>
-                ) : (
-                  <div className="mt-2 text-base">Calibration complete – both views ready.</div>
-                )}
-              </div>
-            ) : (
-              <>
+            <>
                 {showScore && (
                   <div className="text-base text-white/90 mb-2">
                     Score: {typeof lastRepScore.score === "number"
@@ -1587,8 +1412,7 @@ function computeAnglesSideAware(lms) {
                       : "Nice – form looks solid on that rep."}
                   </div>
                 )}
-              </>
-            )}
+            </>
           </div>
         )}
 
