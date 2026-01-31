@@ -10,14 +10,18 @@ import {
 } from "../src/logic/scoreRep";
 import { cosineSimilarityByKey } from "../src/utils/squatSimilarity";
 
-// Mock cosineSimilarityByKey so we control perKey output
-vi.mock("../src/utils/squatSimilarity", () => ({
-  cosineSimilarityByKey: vi.fn((_userTrace, _refTrace, keys) => {
-    const perKey = {};
-    for (const k of keys) perKey[k] = 0.9; // default high similarity
-    return { perKey, coverage: {} };
-  }),
-}));
+// Mock cosineSimilarityByKey so we control perKey output; use real normaliseTrace
+vi.mock("../src/utils/squatSimilarity", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    cosineSimilarityByKey: vi.fn((_userTrace, _refTrace, keys) => {
+      const perKey = {};
+      for (const k of keys) perKey[k] = 0.9; // default high similarity
+      return { perKey, coverage: {} };
+    }),
+  };
+});
 
 describe("similarityToScore", () => {
   it("maps similarity 1 to 100", () => {

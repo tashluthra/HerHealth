@@ -1,7 +1,7 @@
 // algorithm definitions for scoring a single rep
 // it answers what features matter, how important each feature is, and how to combine them into a single score
 
-import { cosineSimilarityByKey } from "../utils/squatSimilarity";
+import { cosineSimilarityByKey, normaliseTrace } from "../utils/squatSimilarity";
 import { FRONT_KEYS, FRONT_WEIGHTS, SIDE_KEYS, SIDE_WEIGHTS } from "./scoringWeights";
 
 export { FRONT_KEYS, FRONT_WEIGHTS, SIDE_KEYS, SIDE_WEIGHTS };
@@ -15,14 +15,25 @@ export function scoreRep({
   const keys = mode === "front" ? FRONT_KEYS : SIDE_KEYS; //ensures the same logic works for both views 
   const weights = mode === "front" ? FRONT_WEIGHTS : SIDE_WEIGHTS;
 
-  const sims = cosineSimilarityByKey(userTrace60, refTrace60, keys);
+  // Front view: apply baseline subtraction so user and reference traces are aligned (same representation)
+  // User trace uses deltas; reference may use raw values – normaliseTrace aligns both for fair cosine comparison
+  const userForSim = mode === "front"
+    ? normaliseTrace(userTrace60, keys, 60)
+    : userTrace60;
+  const refForSim = mode === "front"
+    ? normaliseTrace(refTrace60, keys, 60)
+    : refTrace60;
+
+  const sims = cosineSimilarityByKey(userForSim, refForSim, keys);
 
   let weighted = 0;
   for (const k of keys) {
     weighted += weights[k] * (sims.perKey[k] ?? 0);
   }
 
-  const score = similarityToScore(weighted); //explicit mapping to 0-100 score
+  // Front view: use lower minSim (0.3) – cosine similarity tends to be lower due to 2D projection sensitivity
+  const minSim = mode === "front" ? 0.3 : 0.6;
+  const score = similarityToScore(weighted, minSim); //explicit mapping to 0-100 score
 
   const flags = detectFormIssues(sims.perKey, mode); //interpretability layer
 
