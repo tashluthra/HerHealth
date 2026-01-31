@@ -16,4 +16,4 @@
 ### Backend (reference data only)
 
 - `cd backend` – contains `build_reference_templates.py` for processing videos into reference trajectories
-- No API server; the frontend runs standalone with MediaPipe pose detection
+- **Tests:** `pip install -r requirements.txt` then `python -m pytest tests/ -v` or `python -m unittest tests.test_build_reference_templates -v`
