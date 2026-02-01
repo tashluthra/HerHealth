@@ -423,4 +423,72 @@ A: (1) Support .MOV or auto-convert. (2) Multiple reps per video. (3) User-speci
 
 ---
 
+## 16. Backend Tests
+
+**Location:** `backend/tests/`
+
+**Run tests:**
+
+```bash
+cd backend && python -m pytest tests/ -v
+# Or:
+cd backend && python -m unittest tests.test_build_reference_templates -v
+```
+
+### 16.1 Why mock cv2 and MediaPipe?
+
+The tests use **mocks** for `cv2` and `mediapipe` so they can run without:
+
+- Video files
+- OpenCV
+- MediaPipe pose detection
+
+**How:** `conftest.py` (and the test file) replace those modules with `_MockModule` before importing `build_reference_templates`. The mock returns another mock for any attribute, so imports succeed but no real video processing runs.
+
+**Why:** Tests focus on **pure helper functions** (angle, resample, detect_rep_from_hip_y, etc.) that don't need video. Full integration tests with real videos would be slower and harder to run in CI.
+
+### 16.2 What's tested
+
+| Function                | Test class               | What's covered                                                                              |
+| ----------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| `angle`                 | `TestAngle`              | Right angle (90°), straight line (180°), degenerate case, acute angle                       |
+| `torso_angle`           | `TestTorsoAngle`         | Upright (0°), forward lean, list vs tuple input                                             |
+| `moving_average`        | `TestMovingAverage`      | Short input (identity), smoothing, k=1                                                      |
+| `resample`              | `TestResample`           | Empty → zeros, single point → constant, linear interp, default n_samples                    |
+| `detect_rep_from_hip_y` | `TestDetectRepFromHipY`  | Simple down-up rep, monotonic down, sanity (end > start)                                    |
+| `distance_to_centre`    | `TestDistanceToCentre`   | Identical → 0, different → positive MAE, mismatched length                                  |
+| `aggregate_templates`   | `TestAggregateTemplates` | Empty → None, single template, median centre, drop worst, few templates (no drop), use_mean |
+
+### 16.3 What's NOT tested
+
+- `process_video_side` and `process_video_front` — need real video and pose detection
+- `process_directory` — depends on video processing
+- `main()` — full pipeline
+
+These would require integration tests with real or synthetic video.
+
+### 16.4 Notable test cases
+
+**`test_drop_worst`:** Uses an outlier template (e.g. knee [100, 200] vs others ~[10–13, 20–23]). Confirms that with `drop_worst_pct=0.2`, the outlier is dropped and not kept.
+
+**`test_few_templates_no_drop`:** With fewer than 5 templates, `drop_worst_pct` is ignored (no dropping). Avoids over-aggressive dropping when there are few clips.
+
+**`test_use_mean`:** Checks that `use_median=False` uses mean for centre and std for spread (`spread_type == "std"`).
+
+### 16.5 Viva Q&A — Tests
+
+**Q: Why mock cv2 and MediaPipe?**  
+A: So tests can run without video files or heavy dependencies. We only test the pure helper functions; video processing would need integration tests.
+
+**Q: What do you test?**  
+A: The helper functions: angle, torso_angle, moving_average, resample, detect_rep_from_hip_y, distance_to_centre, and aggregate_templates. These are the core logic; video I/O is separate.
+
+**Q: What don't you test?**  
+A: The full video processing pipeline (process_video_side, process_video_front, main). That would need real or synthetic video and is better suited to integration tests.
+
+**Q: How do you run the tests?**  
+A: `cd backend && python -m pytest tests/ -v` or `python -m unittest tests.test_build_reference_templates -v`.
+
+---
+
 _End of Backend Viva Prep_
