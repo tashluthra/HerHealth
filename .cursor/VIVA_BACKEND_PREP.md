@@ -11,7 +11,7 @@ Raw videos (front/*.mp4, side/*.mp4)
     → MediaPipe pose detection (per frame)
     → Extract biomechanical features (angles, valgus, etc.)
     → Detect one rep per video (start → bottom → end)
-    → Cut & resample to 60 frames
+    → Phase-based cut & resample (bottom at frame 30)
     → Aggregate multiple clips → single "ideal" template
     → Save reference_clips.json
 ```
@@ -119,6 +119,23 @@ frontend/public/reference/
 
 ---
 
+### 4.5 `cut_and_resample_phase(arr, s, b, e, n_samples=60)` — Phase-based resampling
+
+**What it does:** Splits the rep at the bottom frame, resamples the down phase (start→bottom) to 30 frames and the up phase (bottom→end) to 30 frames. Bottom always aligns at frame 30.
+
+**How:**
+
+1. `n_down = 30`, `n_up = 30`
+2. `down = arr[s:b]`, `up = arr[b:e+1]`
+3. Resample `down` to 30 points, `up` to 30 points
+4. Concatenate: `down_resampled + up_resampled`
+
+**Fallback:** If phases are too short (<2 points) or bottom is invalid, falls back to linear `resample(arr[s:e+1], n)`.
+
+**Why phase-based?** Asymmetric squat timing (e.g. slow down, fast up) would misalign with linear resampling. Phase-based ensures the bottom of the squat always lines up at frame 30, so user and reference are comparable at the critical depth point.
+
+---
+
 ## 5. Rep Detection — `detect_rep_from_hip_y(hip_y)`
 
 **Idea:** During a squat, the hip moves down (bottom) then up (back to top). Hip Y in image coordinates goes **up** at bottom (Y increases downward).
@@ -187,7 +204,7 @@ hip_y (image coords, down = larger)
 6. **Smooth** all signals
 7. **Rep detection** via `detect_rep_from_hip_y(hip_y)`
 8. **Rep gating:** Reject if rep too short (<20 frames) or bottom too close to edges
-9. **Cut** arrays to `[start : end+1]`, **resample** each to 60
+9. **Cut** arrays to `[start : end+1]`, **phase-based resample** each to 60 (bottom at frame 30)
 10. Return template dict
 
 ### 6.4 Output Template (side)
@@ -233,7 +250,7 @@ Both left and right: hip, knee, ankle, shoulder.
 
 ### 7.3 Pipeline
 
-Same structure as side: video → pose → features → quality gate → smooth → rep detect → cut & resample → template.
+Same structure as side: video → pose → features → quality gate → smooth → rep detect → phase-based cut & resample → template.
 
 ### 7.4 Output Template (front)
 
@@ -302,6 +319,16 @@ Clips that are far from the median are likely bad (wrong angle, partial rep, noi
 ```
 
 **Frontend uses:** `aggregate.centre` (or `aggregate.center`) as the reference trace. Per-clip data is kept for debugging/analysis.
+
+---
+
+### 9.6 Reference Data Notes (reference_clips.json)
+
+**Symmetry (front view):** The ideal reference uses small varied symmetry values (e.g. ±0.02) rather than flat zeros. This represents ideal left–right balance with subtle natural variation, avoiding artificial-looking flat traces that can skew cosine similarity.
+
+**Boundary handling (side view):** Frames 0 and 59 can show boundary artifacts from pose detection. If needed, these can be corrected by interpolating from neighbouring frames so the reference trace is smooth at the edges.
+
+**Regenerating reference:** After any backend changes (e.g. phase-based resampling), run the backend script to regenerate `reference_clips.json` so the reference data matches the new pipeline.
 
 ---
 
@@ -375,6 +402,7 @@ output_json.write_text(json.dumps(data, indent=2))
 | **Quality gating**               | Reject clips with poor pose detection.                 |
 | **Separate front/side**          | Different planes, different features.                  |
 | **Resampling**                   | Normalise time for shape comparison.                   |
+| **Phase-based resampling**       | Bottom always at frame 30; handles asymmetric timing.  |
 
 ---
 
@@ -385,6 +413,9 @@ A: It’s free, well-documented, runs on CPU, and gives 33 landmarks. Good balan
 
 **Q: Why 60 samples per rep?**  
 A: Rep speed varies. Resampling to 60 normalises time so we compare shapes, not raw frame counts. The frontend uses the same 60-frame length for direct comparison.
+
+**Q: Why phase-based resampling instead of linear?**  
+A: Asymmetric squat timing (e.g. slow down, fast up) would misalign with linear resampling. Phase-based splits at the bottom and resamples down/up phases separately, so the bottom always aligns at frame 30. User and reference are comparable at the critical depth point.
 
 **Q: Why median instead of mean for aggregation?**  
 A: One bad clip (occlusion, wrong rep) would skew the mean. Median is robust to outliers.
@@ -449,15 +480,16 @@ The tests use **mocks** for `cv2` and `mediapipe` so they can run without:
 
 ### 16.2 What's tested
 
-| Function                | Test class               | What's covered                                                                              |
-| ----------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
-| `angle`                 | `TestAngle`              | Right angle (90°), straight line (180°), degenerate case, acute angle                       |
-| `torso_angle`           | `TestTorsoAngle`         | Upright (0°), forward lean, list vs tuple input                                             |
-| `moving_average`        | `TestMovingAverage`      | Short input (identity), smoothing, k=1                                                      |
-| `resample`              | `TestResample`           | Empty → zeros, single point → constant, linear interp, default n_samples                    |
-| `detect_rep_from_hip_y` | `TestDetectRepFromHipY`  | Simple down-up rep, monotonic down, sanity (end > start)                                    |
-| `distance_to_centre`    | `TestDistanceToCentre`   | Identical → 0, different → positive MAE, mismatched length                                  |
-| `aggregate_templates`   | `TestAggregateTemplates` | Empty → None, single template, median centre, drop worst, few templates (no drop), use_mean |
+| Function                 | Test class                | What's covered                                                                              |
+| ------------------------ | ------------------------- | ------------------------------------------------------------------------------------------- |
+| `angle`                  | `TestAngle`               | Right angle (90°), straight line (180°), degenerate case, acute angle                       |
+| `torso_angle`            | `TestTorsoAngle`          | Upright (0°), forward lean, list vs tuple input                                             |
+| `moving_average`         | `TestMovingAverage`       | Short input (identity), smoothing, k=1                                                      |
+| `resample`               | `TestResample`            | Empty → zeros, single point → constant, linear interp, default n_samples                    |
+| `cut_and_resample_phase` | `TestCutAndResamplePhase` | Phase split, bottom at frame 30, fallback when phases too short                             |
+| `detect_rep_from_hip_y`  | `TestDetectRepFromHipY`   | Simple down-up rep, monotonic down, sanity (end > start)                                    |
+| `distance_to_centre`     | `TestDistanceToCentre`    | Identical → 0, different → positive MAE, mismatched length                                  |
+| `aggregate_templates`    | `TestAggregateTemplates`  | Empty → None, single template, median centre, drop worst, few templates (no drop), use_mean |
 
 ### 16.3 What's NOT tested
 

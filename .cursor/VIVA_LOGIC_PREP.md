@@ -28,17 +28,18 @@ scoreRep({ userTrace60, refTrace60, mode })
 SquatCam: displays score, flags, feedback
 ```
 
-**In one sentence:** buildRepData aligns user and reference traces to 60 frames; scoreRep compares them with cosine similarity and weights to produce a 0–100 score and form flags.
+**In one sentence:** buildRepData aligns user and reference traces to 60 frames (using phase-based resampling when a valid bottom is detected); scoreRep compares them with cosine similarity and weights to produce a 0–100 score and form flags.
 
 ---
 
 ## 2. Files in the Logic Layer
 
-| File                | Purpose                                                            |
-| ------------------- | ------------------------------------------------------------------ |
-| `buildRepData.js`   | Aligns user and reference traces (pick keys, resample to 60)       |
-| `scoreRep.js`       | Scores a rep against reference (cosine similarity, weights, flags) |
-| `scoringWeights.js` | Defines keys and weights per mode (front/side)                     |
+| File                | Purpose                                                                            |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| `buildRepData.js`   | Aligns user and reference traces (pick keys, phase-based or linear resample to 60) |
+| `scoreRep.js`       | Scores a rep against reference (cosine similarity, weights, flags)                 |
+| `scoringWeights.js` | Defines keys and weights per mode (front/side)                                     |
+| `trajectory.js`     | `resampleTrace`, `resampleTraceByPhase` — resampling helpers                       |
 
 ---
 
@@ -77,11 +78,17 @@ Takes raw user and reference traces (any length) and produces aligned 60-frame t
 
 2. **pickKeys(trace, keys)** — Keep only the keys we care about; drop everything else.
 
-3. **resampleTrace(userRaw, keys, 60)** — Resample user trace to 60 frames (from `trajectory.js`).
+3. **detectBottom(userRaw, keys, mode)** — Detect bottom frame:
+   - Side: min knee angle = bottom (knee most flexed)
+   - Front: max depth = bottom (hip lowest)
 
-4. **resampleTrace(refRaw, keys, 60)** — Resample reference trace to 60 frames.
+4. **User trace resampling:**
+   - If valid bottom (bottomIdx > 0 and < length-1): **resampleTraceByPhase** — split at bottom, resample down phase to 30 frames, up phase to 30 frames (bottom at frame 30)
+   - Else: **resampleTrace** — linear resample to 60
 
-5. Return `{ user, ref, keys, mode, targetN }`.
+5. **resampleTrace(refRaw, keys, 60)** — Reference is already phase-aligned from backend; linear resample is fine (ref is 60 frames).
+
+6. Return `{ user, ref, keys, mode, targetN }`.
 
 ### 3.5 Link to Backend
 
@@ -90,8 +97,8 @@ Takes raw user and reference traces (any length) and produces aligned 60-frame t
 
 ### 3.6 Link to trajectory.js
 
-- `resampleTrace(trace, keys, N)` — Resamples each key's series to N points using linear interpolation, then rebuilds frames.
-- Same idea as backend `resample()`: map progress 0→1, interpolate.
+- `resampleTrace(trace, keys, N)` — Resamples each key's series to N points using linear interpolation, then rebuilds frames. Same idea as backend `resample()`: map progress 0→1, interpolate.
+- `resampleTraceByPhase(trace, keys, bottomIdx, N)` — Phase-based resampling: split at bottomIdx, resample down phase to N/2 and up phase to N/2. Bottom aligns at frame N/2 (30). Falls back to linear if phases too short.
 
 ---
 
@@ -310,15 +317,18 @@ Turns per-key similarities into human-readable flags for feedback.
 | Backend                                                                             | Logic                                     |
 | ----------------------------------------------------------------------------------- | ----------------------------------------- |
 | `aggregate.centre` keys (hip, knee, ankle, torso / valgus, symmetry, pelvic, depth) | `getTraceKeys`, `SIDE_KEYS`, `FRONT_KEYS` |
-| 60 samples per rep                                                                  | `targetN = 60`, `resampleTrace(..., 60)`  |
+| 60 samples per rep (phase-aligned: bottom at frame 30)                              | `targetN = 60`, `resampleTrace(..., 60)`  |
+
+**Reference data notes:** The front-view symmetry in the reference uses small varied values (±0.02) rather than flat zeros, representing ideal left–right balance with subtle natural variation. Side-view boundary frames (0, 59) may be corrected for artifacts. See backend VIVA_BACKEND_PREP.md §9.6 for details.
 
 ### 10.2 Utils → Logic
 
-| Util                                    | Used By               | Purpose                             |
-| --------------------------------------- | --------------------- | ----------------------------------- |
-| `trajectory.resampleTrace`              | buildRepData          | Resample traces to 60 frames        |
-| `squatSimilarity.normaliseTrace`        | scoreRep (front only) | Baseline subtraction for front view |
-| `squatSimilarity.cosineSimilarityByKey` | scoreRep              | Per-key cosine similarity           |
+| Util                                    | Used By               | Purpose                                         |
+| --------------------------------------- | --------------------- | ----------------------------------------------- |
+| `trajectory.resampleTrace`              | buildRepData          | Linear resample traces to 60 frames             |
+| `trajectory.resampleTraceByPhase`       | buildRepData          | Phase-based resample when valid bottom detected |
+| `squatSimilarity.normaliseTrace`        | scoreRep (front only) | Baseline subtraction for front view             |
+| `squatSimilarity.cosineSimilarityByKey` | scoreRep              | Per-key cosine similarity                       |
 
 ### 10.3 SquatCam → Logic
 
@@ -357,6 +367,7 @@ The codebase has **two** scoring approaches:
 | Decision                          | Why                                                     |
 | --------------------------------- | ------------------------------------------------------- |
 | **60 frames**                     | Match backend; fixed length for comparison              |
+| **Phase-based resampling**        | Bottom at frame 30; handles asymmetric squat timing     |
 | **Cosine similarity**             | Shape-based; less sensitive to scale                    |
 | **Weights sum to 1**              | Weighted similarity stays in [0, 1]                     |
 | **normaliseTrace for front only** | Front uses baseline-relative features; side uses angles |
@@ -371,15 +382,20 @@ The codebase has **two** scoring approaches:
 ### 13.1 buildRepData.test.js
 
 - `getTraceKeys`: returns correct keys for front/side; throws for unknown mode
-- `buildRepData`: resamples both to 60; picks only specified keys; handles empty traces; default targetN 60
+- `detectBottom`: side uses min knee; front uses max depth; returns null for invalid
+- `buildRepData`: resamples both to 60; uses phase-based when valid bottom; picks only specified keys; handles empty traces; default targetN 60
 
-### 13.2 scoreRep.test.js
+### 13.2 trajectory.test.js
+
+- `resampleTraceByPhase`: bottom at frame 30; fallback when phases too short or bottom at edge
+
+### 13.3 scoreRep.test.js
 
 - `similarityToScore`: maps 1→100, minSim→0, clamps, custom minSim
 - `detectFormIssues`: flags valgus, symmetry, depth (front); torso, knee (side) at thresholds
 - `scoreRep`: integration (mocks cosineSimilarityByKey)
 
-### 13.3 scoringWeights.test.js
+### 13.4 scoringWeights.test.js
 
 - Keys match expected arrays
 - Weights sum to 1
@@ -391,7 +407,10 @@ The codebase has **two** scoring approaches:
 ## 14. Viva Q&A — Logic Layer
 
 **Q: What does buildRepData do?**  
-A: It takes raw user and reference traces (any length), picks the relevant keys for the mode, and resamples both to 60 frames. Output is aligned traces ready for scoring.
+A: It takes raw user and reference traces (any length), picks the relevant keys for the mode, and resamples both to 60 frames. When a valid bottom is detected (side: min knee; front: max depth), it uses phase-based resampling so the bottom aligns at frame 30. Otherwise it falls back to linear resampling. Output is aligned traces ready for scoring.
+
+**Q: Why phase-based resampling for the user trace?**  
+A: The reference is already phase-aligned from the backend (bottom at frame 30). If the user has asymmetric timing (e.g. slow down, fast up), linear resampling would misalign their bottom with the reference. Phase-based resampling ensures both bottoms align at frame 30 for fair comparison.
 
 **Q: Why 60 frames?**  
 A: Matches the backend. Fixed length lets us compare rep shapes regardless of speed. Frame 0 = start, frame ~30 = bottom, frame 59 = end.
