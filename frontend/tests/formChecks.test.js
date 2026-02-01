@@ -135,6 +135,16 @@ describe("checkForm", () => {
       const result = checkForm(rep);
       expect(result.valgusOK).toBe(true);
     });
+
+    it("valgus is advisory-only in front view: rep counts (overallOK true) even when valgus fails", () => {
+      const rep = { minKnee: 110, valgusMetric: 0.09, viewMode: "front" };
+      const result = checkForm(rep);
+      expect(result.valgusOK).toBe(false);
+      expect(result.issues).toContain(
+        "Keep your knees tracking over your toes– avoid them collapsing inwards."
+      );
+      expect(result.overallOK).toBe(true); // rep counts; valgus is feedback only
+    });
   });
 
   describe("overall", () => {

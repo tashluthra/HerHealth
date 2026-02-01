@@ -111,6 +111,7 @@ export function checkForm(rep, opts = {}) {
 
     // 3) Knee valgus (only meaningful in front view)
     // valgusMetric is bigger when knees come closer together than feet.
+    // Advisory-only in front view: show feedback but don't block rep count (avoids temperamental pass/fail from pose noise).
     let valgusOK = true;
     if (isFront && typeof rep.valgusMetric === "number") {
         valgusOK = rep.valgusMetric <= cfg.maxValgusMetric;
@@ -122,7 +123,8 @@ export function checkForm(rep, opts = {}) {
         }
     }
 
-    const overallOK = depthOK && forwardLeanOK && sideBackOK && torsoDeltaOK && bottomTorsoOK && valgusOK;
+    // Valgus is advisory-only in front view: reps count even when valgus fails; user still sees the tip.
+    const overallOK = depthOK && forwardLeanOK && sideBackOK && torsoDeltaOK && bottomTorsoOK && (isFront || valgusOK);
 
     return {
         depthOK,
