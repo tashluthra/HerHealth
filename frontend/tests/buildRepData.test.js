@@ -84,4 +84,40 @@ describe("buildRepData", () => {
     expect(result.ref).toEqual([]);
     expect(result.keys).toEqual(sideKeys);
   });
+
+  it("uses phase-based resampling for side mode when clear bottom detected", () => {
+    // User trace: knee has min at index 20 (bottom of squat)
+    const userRaw = Array.from({ length: 40 }, (_, i) => ({
+      knee: 100 + Math.abs(i - 20),
+      hip: 120 - Math.abs(i - 20) * 0.5,
+      torso: 30 + Math.abs(i - 20) * 0.2,
+      ankle: 90,
+    }));
+    const refRaw = makeTrace(60, sideKeys);
+    const result = buildRepData(userRaw, refRaw, "side", 60);
+
+    expect(result.user).toHaveLength(60);
+    expect(result.ref).toHaveLength(60);
+    // Bottom (min knee = 100) should align at frame 30
+    const bottomVal = 100;
+    expect(result.user[30].knee).toBeCloseTo(bottomVal, 0);
+  });
+
+  it("uses phase-based resampling for front mode when clear bottom detected", () => {
+    // User trace: depth has max at index 25 (bottom of squat)
+    const userRaw = Array.from({ length: 50 }, (_, i) => ({
+      valgus: -0.05,
+      symmetry: 0,
+      pelvic: 0,
+      depth: 100 - Math.abs(i - 25),
+    }));
+    const refRaw = makeTrace(60, frontKeys);
+    const result = buildRepData(userRaw, refRaw, "front", 60);
+
+    expect(result.user).toHaveLength(60);
+    expect(result.ref).toHaveLength(60);
+    // Bottom (max depth = 100) should align at frame 30
+    const bottomVal = 100;
+    expect(result.user[30].depth).toBeCloseTo(bottomVal, 0);
+  });
 });

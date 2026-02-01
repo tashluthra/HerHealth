@@ -24,6 +24,7 @@ from build_reference_templates import (
     torso_angle,
     moving_average,
     resample,
+    cut_and_resample_phase,
     detect_rep_from_hip_y,
     distance_to_centre,
     aggregate_templates,
@@ -126,6 +127,40 @@ class TestResample(unittest.TestCase):
         """Uses n_samples when n not provided."""
         result = resample([0.0, 1.0])
         self.assertEqual(len(result), n_samples)
+
+
+# --- cut_and_resample_phase ---
+class TestCutAndResamplePhase(unittest.TestCase):
+    def test_phase_based_output_length(self):
+        """Output has n_samples (60) elements."""
+        arr = list(np.linspace(0, 100, 50))
+        s, b, e = 0, 25, 49
+        result = cut_and_resample_phase(arr, s, b, e, n_samples=60)
+        self.assertEqual(len(result), 60)
+
+    def test_bottom_at_frame_30(self):
+        """Bottom value appears at frame 30 (middle of output)."""
+        arr = list(np.linspace(0, 100, 50))
+        s, b, e = 0, 25, 49
+        result = cut_and_resample_phase(arr, s, b, e, n_samples=60)
+        bottom_val = arr[b]
+        self.assertAlmostEqual(result[30], bottom_val, delta=1.0)
+
+    def test_fallback_short_down_phase(self):
+        """Falls back to linear resampling when down phase has < 2 elements."""
+        arr = list(np.linspace(0, 100, 50))
+        s, b, e = 0, 1, 49
+        result = cut_and_resample_phase(arr, s, b, e, n_samples=60)
+        self.assertEqual(len(result), 60)
+        self.assertAlmostEqual(result[0], arr[s], delta=1.0)
+        self.assertAlmostEqual(result[-1], arr[e], delta=1.0)
+
+    def test_fallback_short_up_phase(self):
+        """Falls back to linear resampling when up phase has < 2 elements."""
+        arr = list(np.linspace(0, 100, 50))
+        s, b, e = 0, 48, 49
+        result = cut_and_resample_phase(arr, s, b, e, n_samples=60)
+        self.assertEqual(len(result), 60)
 
 
 # --- detect_rep_from_hip_y ---

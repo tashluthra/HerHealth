@@ -102,3 +102,25 @@ export function resampleTrace(trace, keys, N = 60) {
   }
   return out;
 }
+
+/**
+ * Phase-based resampling: split at bottomIdx, resample down phase to N/2
+ * and up phase to N/2. Bottom always aligns at frame N/2.
+ * Falls back to linear resampling if phases are too short.
+ */
+export function resampleTraceByPhase(trace, keys, bottomIdx, N = 60) {
+  if (!trace || trace.length === 0) return [];
+
+  const nDown = Math.floor(N / 2);
+  const nUp = N - nDown;
+  const down = trace.slice(0, bottomIdx);
+  const up = trace.slice(bottomIdx);
+
+  if (down.length < 2 || up.length < 2 || bottomIdx <= 0 || bottomIdx >= trace.length) {
+    return resampleTrace(trace, keys, N);
+  }
+
+  const downResampled = resampleTrace(down, keys, nDown);
+  const upResampled = resampleTrace(up, keys, nUp);
+  return [...downResampled, ...upResampled];
+}

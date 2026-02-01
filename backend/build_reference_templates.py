@@ -61,6 +61,22 @@ def resample(traj, n=n_samples):
     return np.interp(xi, x, traj)
 
 
+def cut_and_resample_phase(arr, s, b, e, n_samples=n_samples):
+    """
+    Phase-based resampling: split at bottom, resample down phase to n_samples/2
+    and up phase to n_samples/2. Bottom always aligns at frame n_samples/2.
+    Falls back to linear resampling if phases are too short.
+    """
+    n_down = n_samples // 2
+    n_up = n_samples - n_down
+    down = arr[s:b]
+    up = arr[b : e + 1]
+    if len(down) < 2 or len(up) < 2 or b <= s or b >= e:
+        return resample(arr[s : e + 1], n_samples).tolist()
+    down_resampled = resample(down, n_down).tolist()
+    up_resampled = resample(up, n_up).tolist()
+    return down_resampled + up_resampled
+
 
 def detect_rep_from_hip_y(hip_y):
     """ 
@@ -184,9 +200,9 @@ def process_video_side(path: Path):
 
 
 
-    #cut and resample
+    #cut and resample (phase-based: bottom at frame 30)
     def cut_and_resample(arr):
-        return resample(arr[s:e+1], n_samples).tolist()
+        return cut_and_resample_phase(arr, s, b, e, n_samples)
 
     template = {
         "file": path.name,
@@ -338,9 +354,9 @@ def process_video_front(path: Path):
 
 
 
-    #cut and resample
+    #cut and resample (phase-based: bottom at frame 30)
     def cut_and_resample(arr):
-        return resample(arr[s:e+1], n_samples).tolist()
+        return cut_and_resample_phase(arr, s, b, e, n_samples)
 
     template = {
         "file": path.name,
