@@ -347,18 +347,14 @@ Turns per-key similarities into human-readable flags for feedback.
 
 ---
 
-## 11. Two Scoring Paths (Important)
+## 11. Session Summary (localStorage)
 
-The codebase has **two** scoring approaches:
+When the session ends, the summary uses **per-rep scores** from scoreRep:
 
-| Path                                       | Used By          | Method                                           |
-| ------------------------------------------ | ---------------- | ------------------------------------------------ |
-| **scoreRep** (logic)                       | SquatCam (main)  | Cosine similarity vs reference trace             |
-| **scoreRepAgainstTargets** (repQuality.js) | scoreSessionReps | Target-based (depth, torso vs aggregate targets) |
+- **avgQuality** = mean of `rep.score` across all reps (0–100)
+- **goodReps** = count of reps with score ≥ 70
 
-- **scoreRep** is the primary path: shape-based comparison to reference.
-- **repQuality** uses aggregate targets (e.g. knee_bottom, torso) for session-level scoring.
-- They can coexist; SquatCam primarily uses scoreRep.
+No separate scoring path; the same scoreRep output drives both per-rep feedback and session summary.
 
 ---
 
@@ -426,9 +422,6 @@ A: Front view uses 2D projection; cosine similarity tends to be lower due to cam
 
 **Q: How were the weights chosen?**  
 A: Research-based: valgus and knee get highest weight due to injury risk and squat quality. Weights sum to 1 so the weighted similarity stays in [0, 1].
-
-**Q: What's the difference between scoreRep and scoreRepAgainstTargets?**  
-A: scoreRep uses cosine similarity vs a reference trace (shape-based). scoreRepAgainstTargets uses target values (e.g. knee_bottom, torso) from aggregate data. SquatCam mainly uses scoreRep.
 
 **Q: What do the flags mean?**  
 A: They're generated from per-key similarities. Low similarity for a key (e.g. valgus < 0.35) means that aspect of form differs from the reference, so we flag it for feedback.

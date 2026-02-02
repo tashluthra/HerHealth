@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import { FilesetResolver, PoseLandmarker, DrawingUtils } from "@mediapipe/tasks-vision";
 import { classifyScore } from "../utils/squatSimilarity";
 import { scoreRep } from "../logic/scoreRep";
-import { scoreSessionReps } from "../metrics/repQuality";
 import { checkForm } from "../utils/formChecks";
 import { buildRepData } from "../logic/buildRepData";
 
@@ -992,26 +991,17 @@ updateRepState(lms, ang, performance.now(), (repSummary) => {
       date: new Date().toISOString(),
     };
 
-    //compute quality using the reference JSON (current view mode)
-    let quality = null;
-    try {
-      if (refTemplates?.aggregate) {
-        quality = scoreSessionReps(s.reps, refTemplates.aggregate);
-        if (quality) {
-          summary = {
-            ...summary,
-            avgQuality: quality.avgQuality,
-            goodReps: quality.goodReps,
-          };
-          console.log("[HerHealth] rep quality summary:", quality);
-        }
-      }
-    } catch (e) {
-      console.warn("[HerHealth] quality scoring failed:", e);
+    // Session summary from per-rep scores (scoreRep)
+    const scores = s.reps.map((r) => r.score).filter((n) => typeof n === "number" && Number.isFinite(n));
+    const avgQuality = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+    const GOOD_REP_THRESHOLD = 70;
+    const goodReps = scores.filter((sc) => sc >= GOOD_REP_THRESHOLD).length;
+    if (avgQuality != null) {
+      summary = { ...summary, avgQuality, goodReps };
     }
 
     const { romCalibration, ...sessionForStorage } = s;
-    const finished = { ...sessionForStorage, startedAt, endedAt: now, summary, quality };
+    const finished = { ...sessionForStorage, startedAt, endedAt: now, summary };
 
     // Persist to localStorage (omit romCalibration – not persisted)
     try {
